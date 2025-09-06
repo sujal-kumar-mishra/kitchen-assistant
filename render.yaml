@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: kitchen-backend
+    env: node
+    plan: free
+    rootDir: backend
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_WEBHOOK_SECRET
+        sync: false
+      - key: CORS_ORIGIN
+        value: https://kitchen-frontend.onrender.com
+
+  - type: static
+    name: kitchen-frontend
+    rootDir: frontend
+    buildCommand: "npm install && npm run build"
+    publishPath: dist
+    envVars:
+      - key: VITE_BACKEND_URL
+        value: https://kitchen-backend.onrender.com
