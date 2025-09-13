@@ -119,6 +119,23 @@ app.options('*', cors(corsOptions));
 // Serve static files from parent directory for testing
 app.use(express.static('../'));
 
+// Health check endpoint
+app.get('/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// Enhanced status endpoint for polling fallback
+app.get('/api/status', (req, res) => {
+  const statusData = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    activeConnections: io.engine.clientsCount,
+    sseConnections: sseClients ? sseClients.size : 0,
+    timers: timerManager ? timerManager.listTimers() : []
+  };
+  
+  res.json(statusData);
+});
+
 // Root endpoint for testing
 app.get('/', (req, res) => {
   logger.info('🏠 Root endpoint accessed');
@@ -202,9 +219,13 @@ io.on('connection', (socket) => {
   logger.debug('⏰ Timer bootstrap sent to client', { socketId: socket.id });
 });
 
-// Initialize timer manager
+// Initialize timer manager with SSE broadcasting
 logger.info('⏰ Initializing timer manager', { redisUrl: process.env.REDIS_URL ? 'configured' : 'not configured' });
-const timerManager = createTimerManager({ io, redisUrl: process.env.REDIS_URL });
+const timerManager = createTimerManager({ 
+  io, 
+  redisUrl: process.env.REDIS_URL, 
+  broadcastSSE 
+});
 
 // -------------------- Server-Sent Events (SSE) --------------------
 const sseClients = new Set();

@@ -114,7 +114,10 @@ class KitchenAssistant {
             this.eventSource.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    this.handleBroadcastMessage(data);
+                    // Use setTimeout to prevent blocking the main thread
+                    setTimeout(() => {
+                        this.handleBroadcastMessage(data);
+                    }, 0);
                 } catch (error) {
                     console.error('❌ Error parsing SSE message:', error);
                 }
@@ -935,20 +938,41 @@ class KitchenAssistant {
             videoCard.onmouseover = () => videoCard.style.transform = 'translateY(-2px)';
             videoCard.onmouseout = () => videoCard.style.transform = 'translateY(0)';
             
-            // Add click event with better error handling
-            videoCard.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                console.log('Video card clicked:', video.title, video.id);
-                this.playVideo(video.id, video.title);
-            });
+            // Add action buttons container
+            const actionsDiv = document.createElement('div');
+            actionsDiv.style.cssText = `
+                display: flex;
+                gap: 5px;
+                margin-top: 8px;
+                justify-content: center;
+                flex-wrap: wrap;
+            `;
             
-            // Also add the onclick as fallback
-            videoCard.onclick = (e) => {
-                e.preventDefault();
-                console.log('Video card onclick:', video.title, video.id);
-                this.playVideo(video.id, video.title);
-            };
+            const safeTitle = (video.title || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+            actionsDiv.innerHTML = `
+                <button onclick="window.kitchenAssistant.playVideo('${video.id}', '${safeTitle}', 'embed'); event.stopPropagation();" 
+                        style="background: #4CAF50; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; flex: 1; min-width: 50px;">
+                    <i class="fas fa-play"></i> Embed
+                </button>
+                <button onclick="window.kitchenAssistant.playVideo('${video.id}', '${safeTitle}', 'external'); event.stopPropagation();" 
+                        style="background: #ff4444; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; flex: 1; min-width: 60px;">
+                    <i class="fab fa-youtube"></i> YouTube
+                </button>
+                <button onclick="window.kitchenAssistant.playVideo('${video.id}', '${safeTitle}', 'direct'); event.stopPropagation();" 
+                        style="background: #2196F3; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; flex: 1; min-width: 50px;">
+                    <i class="fas fa-link"></i> More
+                </button>
+            `;
+            
+            videoCard.appendChild(actionsDiv);
+            
+            // Default click shows options
+            videoCard.addEventListener('click', (e) => {
+                if (e.target.tagName !== 'BUTTON') {
+                    console.log('Video card clicked:', video.title, video.id);
+                    this.playVideo(video.id, video.title, 'direct');
+                }
+            });
             
             resultsDiv.appendChild(videoCard);
         });
@@ -956,9 +980,98 @@ class KitchenAssistant {
         youtubeSection.style.display = 'block';
     }
     
-    playVideo(videoId, title) {
-        console.log('Attempting to play video:', videoId, title);
+    playVideo(videoId, title, method = 'embed') {
+        console.log('Attempting to play video:', videoId, title, 'Method:', method);
         
+        // Handle different playback methods
+        switch (method) {
+            case 'external':
+                this.openVideoExternally(videoId, title);
+                return;
+            case 'direct':
+                this.showVideoOptions(videoId, title);
+                return;
+            case 'embed':
+            default:
+                this.playVideoEmbed(videoId, title);
+                return;
+        }
+    }
+    
+    openVideoExternally(videoId, title) {
+        const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        window.open(youtubeUrl, '_blank');
+        this.showNotification('Opening YouTube', `Opening "${title}" in new tab`);
+        this.speak(`Opening ${title} in YouTube`);
+    }
+    
+    showVideoOptions(videoId, title) {
+        const options = [
+            { label: 'YouTube App/Website', url: `https://www.youtube.com/watch?v=${videoId}` },
+            { label: 'YouTube Music', url: `https://music.youtube.com/watch?v=${videoId}` },
+            { label: 'Invidious (Privacy)', url: `https://invidious.io/watch?v=${videoId}` },
+            { label: 'Copy Video ID', action: () => navigator.clipboard.writeText(videoId) }
+        ];
+        
+        const optionsHtml = options.map((option, index) => 
+            option.url ? 
+                `<button onclick="window.open('${option.url}', '_blank')" class="video-option-btn">${option.label}</button>` :
+                `<button onclick="navigator.clipboard.writeText('${videoId}'); window.kitchenAssistant.showNotification('Copied', 'Video ID copied to clipboard')" class="video-option-btn">${option.label}</button>`
+        ).join('');
+        
+        const container = this.getVideoContainer();
+        if (container) {
+            container.innerHTML = `
+                <div style="padding: 20px; text-align: center; background: white; border-radius: 8px;">
+                    <h3>Video Playback Options</h3>
+                    <p><strong>${title}</strong></p>
+                    <p style="color: #666; margin-bottom: 20px;">Choose how you'd like to play this video:</p>
+                    <div style="display: flex; flex-direction: column; gap: 10px;">
+                        ${optionsHtml}
+                        <button onclick="window.kitchenAssistant.playVideoEmbed('${videoId}', '${title.replace(/'/g, "\\'")}'); event.stopPropagation();" 
+                                class="video-option-btn" style="background: #ff6b6b;">
+                            Try Embed Anyway
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+        
+        this.speak(`Showing playback options for ${title}`);
+        
+        // Add CSS for video option buttons if not already added
+        if (!document.getElementById('video-options-css')) {
+            const style = document.createElement('style');
+            style.id = 'video-options-css';
+            style.textContent = `
+                .video-option-btn {
+                    background: #4CAF50;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    transition: background 0.3s;
+                    width: 100%;
+                    max-width: 300px;
+                }
+                .video-option-btn:hover {
+                    background: #45a049;
+                    transform: translateY(-1px);
+                }
+                .video-option-btn:nth-child(2) { background: #ff4444; }
+                .video-option-btn:nth-child(2):hover { background: #e33333; }
+                .video-option-btn:nth-child(3) { background: #2196F3; }
+                .video-option-btn:nth-child(3):hover { background: #1976D2; }
+                .video-option-btn:nth-child(4) { background: #9C27B0; }
+                .video-option-btn:nth-child(4):hover { background: #7B1FA2; }
+            `;
+            document.head.appendChild(style);
+        }
+    }
+    
+    getVideoContainer() {
         // Try main dashboard containers first
         let container = document.getElementById('videoContainer');
         let playerDiv = document.getElementById('youtubePlayer');
@@ -980,8 +1093,15 @@ class KitchenAssistant {
                 videoContainer2: !!document.getElementById('videoContainer2'),
                 videoPlayer: !!document.getElementById('videoPlayer')
             });
-            return;
+            return null;
         }
+        
+        return container;
+    }
+
+    playVideoEmbed(videoId, title) {
+        const container = this.getVideoContainer();
+        if (!container) return;
         
         // Clear any existing content
         container.innerHTML = '';
@@ -1213,20 +1333,33 @@ class KitchenAssistant {
     
     // Unified message handling for both SSE and WebSocket
     handleBroadcastMessage(data) {
-        console.log('📨 Received broadcast message:', data);
+        // Optimize logging to prevent performance issues
+        if (data.type !== 'api-call' || data.url?.includes('/timer/')) {
+            console.log('📨 Received broadcast message:', data.type);
+        }
         
-        switch (data.type) {
-            case 'timer':
-                this.handleTimerEvent(data);
-                break;
-            case 'api-call':
-                this.handleAPICall(data);
-                break;
-            case 'system':
-                this.handleSystemMessage(data);
-                break;
-            default:
-                console.log('🔄 Unknown message type:', data.type);
+        try {
+            switch (data.type) {
+                case 'timer':
+                    this.handleTimerEvent(data);
+                    break;
+                case 'api-call':
+                    // Only handle important API calls to prevent spam
+                    if (data.url?.includes('/timer/') || data.url?.includes('/youtube/')) {
+                        this.handleAPICall(data);
+                    }
+                    break;
+                case 'system':
+                    this.handleSystemMessage(data);
+                    break;
+                default:
+                    // Reduce console spam
+                    if (data.type !== 'api-call') {
+                        console.log('🔄 Unknown message type:', data.type);
+                    }
+            }
+        } catch (error) {
+            console.error('❌ Error handling broadcast message:', error);
         }
     }
     
@@ -1253,6 +1386,30 @@ class KitchenAssistant {
         console.log('📢 System message:', data.message);
         if (data.message) {
             this.showNotification('System', data.message);
+        }
+    }
+    
+    // Handle API call broadcasts
+    handleAPICall(data) {
+        console.log('📡 API call detected:', data);
+        
+        // Only process certain API calls to avoid spam
+        const relevantAPIs = ['/api/timer/', '/api/youtube/', '/api/convert'];
+        const isRelevant = relevantAPIs.some(api => data.url && data.url.includes(api));
+        
+        if (isRelevant) {
+            // Handle specific API responses
+            if (data.url.includes('/api/timer/') && data.status === 200) {
+                // Timer API call - might need to refresh timers
+                console.log('🔄 Timer API call detected, refreshing...');
+                this.renderActiveTimers();
+            }
+            
+            if (data.url.includes('/api/youtube/search') && data.status === 200 && data.body) {
+                console.log('🎬 YouTube search result received');
+                // YouTube search results could be processed here if needed
+                this.handleAPIUpdate(data.url, data.body);
+            }
         }
     }
     
@@ -1940,41 +2097,47 @@ function checkForBlockingIssues() {
     console.log('🔍 Checking for blocking issues...');
     
     const issues = [];
+    let checksCompleted = 0;
+    const totalChecks = 2;
     
-    // Check for ad blockers by testing a common blocked request pattern
-    const testImg = new Image();
-    testImg.onerror = () => {
-        issues.push('Ad blocker detected - may block YouTube and other requests');
-    };
-    testImg.src = 'https://googleads.g.doubleclick.net/pagead/id';
-    
-    // Check WebSocket support
+    // Quick WebSocket support check
     if (!window.WebSocket) {
         issues.push('WebSocket not supported in this browser');
     }
     
-    // Check for strict content security policies
-    try {
-        eval('1+1'); // This will fail if CSP blocks eval
-    } catch (e) {
-        if (e.name === 'EvalError') {
-            issues.push('Strict Content Security Policy may block some features');
+    // Quick EventSource support check
+    if (!window.EventSource) {
+        issues.push('Server-Sent Events not supported in this browser');
+    }
+    
+    // Simplified ad blocker detection (non-blocking)
+    const testImg = new Image();
+    testImg.onload = testImg.onerror = () => {
+        checksCompleted++;
+        if (testImg.naturalWidth === 0) {
+            issues.push('Ad blocker detected - may block some requests');
+        }
+        checkComplete();
+    };
+    testImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; // 1x1 transparent gif
+    
+    function checkComplete() {
+        if (checksCompleted >= 1) { // Don't wait for all checks
+            if (issues.length > 0) {
+                console.warn('⚠️ Potential blocking issues detected:', issues);
+                
+                if (window.kitchenAssistant) {
+                    window.kitchenAssistant.showNotification('Browser Issues Detected', 
+                        `Found ${issues.length} potential issues. Check console for details.`);
+                }
+            } else {
+                console.log('✅ No blocking issues detected');
+            }
         }
     }
     
-    setTimeout(() => {
-        if (issues.length > 0) {
-            console.warn('⚠️ Potential blocking issues detected:');
-            issues.forEach(issue => console.warn('  -', issue));
-            
-            if (window.kitchenAssistant) {
-                window.kitchenAssistant.showNotification('Browser Issues Detected', 
-                    `Found ${issues.length} potential issues that may affect functionality. Check console for details.`);
-            }
-        } else {
-            console.log('✅ No blocking issues detected');
-        }
-    }, 1000);
+    // Don't wait too long
+    setTimeout(checkComplete, 500);
 }
 
 // WebSocket connections are properly managed by the wsManager

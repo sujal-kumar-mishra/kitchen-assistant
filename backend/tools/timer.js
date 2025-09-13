@@ -12,7 +12,7 @@ const Redis = require('ioredis');
 
 let redisClient = null;
 
-function createTimerManager({ io, redisUrl }) {
+function createTimerManager({ io, redisUrl, broadcastSSE = null }) {
   const useRedis = Boolean(redisUrl);
   if (useRedis) {
     redisClient = new Redis(redisUrl);
@@ -59,18 +59,37 @@ function createTimerManager({ io, redisUrl }) {
     const timer = { secondsLeft, intervalId: null };
     timer.intervalId = setInterval(() => {
       timer.secondsLeft -= 1;
-      io.emit('timer:update', { id, secondsLeft: timer.secondsLeft });
+      
+      // Broadcast via both WebSocket and SSE
+      const updateData = { id, secondsLeft: timer.secondsLeft };
+      io.emit('timer:update', updateData);
+      if (broadcastSSE) {
+        broadcastSSE({ type: 'timer', action: 'update', ...updateData });
+      }
+      
       persistTimerToRedis(id);
 
       if (timer.secondsLeft <= 0) {
         clearInterval(timer.intervalId);
-        io.emit('timer:done', { id });
+        
+        const doneData = { id };
+        io.emit('timer:done', doneData);
+        if (broadcastSSE) {
+          broadcastSSE({ type: 'timer', action: 'done', ...doneData });
+        }
+        
         delete timers[id];
         removeTimerFromRedis(id);
       }
     }, 1000);
     timers[id] = timer;
-    io.emit('timer:started', { id, secondsLeft: timer.secondsLeft });
+    
+    const startedData = { id, secondsLeft: timer.secondsLeft };
+    io.emit('timer:started', startedData);
+    if (broadcastSSE) {
+      broadcastSSE({ type: 'timer', action: 'started', ...startedData });
+    }
+    
     persistTimerToRedis(id);
     return id;
   }
@@ -87,7 +106,12 @@ function createTimerManager({ io, redisUrl }) {
     clearInterval(t.intervalId);
     delete timers[id];
     removeTimerFromRedis(id);
-    io.emit('timer:stopped', { id });
+    
+    const stoppedData = { id };
+    io.emit('timer:stopped', stoppedData);
+    if (broadcastSSE) {
+      broadcastSSE({ type: 'timer', action: 'stopped', ...stoppedData });
+    }
   }
 
   function listTimers() {
