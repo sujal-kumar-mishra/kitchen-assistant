@@ -206,6 +206,80 @@ io.on('connection', (socket) => {
 logger.info('⏰ Initializing timer manager', { redisUrl: process.env.REDIS_URL ? 'configured' : 'not configured' });
 const timerManager = createTimerManager({ io, redisUrl: process.env.REDIS_URL });
 
+// -------------------- Server-Sent Events (SSE) --------------------
+const sseClients = new Set();
+
+app.get('/api/events', (req, res) => {
+  // Set SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': req.headers.origin || '*',
+    'Access-Control-Allow-Credentials': 'true'
+  });
+
+  // Send initial connection message
+  res.write('data: {"type":"system","message":"SSE connection established"}\n\n');
+  
+  // Add client to set
+  sseClients.add(res);
+  logger.info('✅ SSE client connected', { totalClients: sseClients.size });
+  
+  // Handle client disconnect
+  req.on('close', () => {
+    sseClients.delete(res);
+    logger.info('❌ SSE client disconnected', { remainingClients: sseClients.size });
+  });
+  
+  req.on('error', (error) => {
+    logger.error('❌ SSE client error', { error: error.message });
+    sseClients.delete(res);
+  });
+});
+
+// Enhanced status endpoint for polling fallback
+app.get('/api/status', (req, res) => {
+  const statusData = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    activeConnections: io.engine.clientsCount,
+    sseConnections: sseClients.size,
+    timers: timerManager ? timerManager.listTimers() : []
+  };
+  
+  res.json(statusData);
+});
+
+// Function to broadcast to all SSE clients
+function broadcastSSE(data) {
+  if (sseClients.size === 0) {
+    return; // No clients to broadcast to
+  }
+  
+  const message = `data: ${JSON.stringify(data)}\n\n`;
+  let disconnectedClients = [];
+  
+  sseClients.forEach(client => {
+    try {
+      client.write(message);
+    } catch (error) {
+      logger.warn('⚠️ Failed to send to SSE client', { error: error.message });
+      disconnectedClients.push(client);
+    }
+  });
+  
+  // Remove disconnected clients
+  disconnectedClients.forEach(client => sseClients.delete(client));
+  
+  logger.info('📡 SSE Broadcast', { 
+    type: data.type,
+    clients: sseClients.size,
+    removed: disconnectedClients.length
+  });
+}
+
 // Middleware to broadcast API calls to frontend with enhanced logging
 app.use('/api', (req, res, next) => {
   logger.info(`🎯 API called: ${req.method} ${req.originalUrl}`, {
@@ -266,17 +340,27 @@ app.use('/api', (req, res, next) => {
       response: responseData
     };
     
+    // Broadcast via both SSE and WebSocket
+    const sseData = {
+      type: 'api-call',
+      ...broadcastData
+    };
+    
+    // SSE broadcast (preferred)
+    broadcastSSE(sseData);
+    
+    // WebSocket broadcast (fallback)
+    io.emit('api:call', broadcastData);
+    
     // Log the broadcast
-    logger.info(`📡 Broadcasting API call to ${io.engine.clientsCount} clients`, {
+    logger.info(`📡 Broadcasting API call`, {
       requestId: req.requestId,
       method: req.method,
       url: req.originalUrl,
       status: res.statusCode,
-      connectedClients: io.engine.clientsCount
+      sseClients: sseClients.size,
+      socketClients: io.engine.clientsCount
     });
-    
-    // Broadcast to all connected clients
-    io.emit('api:call', broadcastData);
     
     return result;
   };

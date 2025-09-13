@@ -70,7 +70,7 @@ class KitchenAssistant {
     }
     
     init() {
-        this.initializeSocketIO();
+        this.initializeBroadcastSystem(); // Use new broadcast system
         this.initializeSpeechRecognition();
         this.bindEventListeners();
         this.updateConnectionStatus('Ready');
@@ -79,20 +79,91 @@ class KitchenAssistant {
     }
 
     
-    // Socket.IO for real-time features (timers) with conflict prevention
+    // Initialize broadcasting system - SSE preferred, WebSocket as fallback
+    initializeBroadcastSystem() {
+        console.log('📡 Initializing broadcast system...');
+        
+        // Try Server-Sent Events first (simpler, more reliable)
+        if (this.initializeSSE()) {
+            console.log('✅ Using Server-Sent Events for broadcasting');
+            return;
+        }
+        
+        // Fallback to WebSocket if SSE fails
+        console.log('🔄 SSE unavailable, falling back to WebSocket');
+        this.initializeSocketIO();
+    }
+    
+    // Server-Sent Events implementation
+    initializeSSE() {
+        try {
+            if (!window.EventSource) {
+                console.log('❌ EventSource not supported');
+                return false;
+            }
+            
+            console.log('🌊 Connecting to SSE stream:', `${this.backendUrl}/api/events`);
+            
+            this.eventSource = new EventSource(`${this.backendUrl}/api/events`);
+            
+            this.eventSource.onopen = () => {
+                console.log('✅ SSE connection established');
+                this.updateConnectionStatus('Connected (SSE)', true);
+            };
+            
+            this.eventSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleBroadcastMessage(data);
+                } catch (error) {
+                    console.error('❌ Error parsing SSE message:', error);
+                }
+            };
+            
+            this.eventSource.onerror = (error) => {
+                console.error('❌ SSE connection error:', error);
+                this.updateConnectionStatus('SSE Error', false);
+                
+                // Auto-reconnect after delay
+                setTimeout(() => {
+                    if (this.eventSource.readyState === EventSource.CLOSED) {
+                        console.log('� Reconnecting SSE...');
+                        this.initializeSSE();
+                    }
+                }, 5000);
+            };
+            
+            // Set up custom event listeners for different message types
+            this.eventSource.addEventListener('timer', (event) => {
+                const data = JSON.parse(event.data);
+                this.handleTimerEvent(data);
+            });
+            
+            this.eventSource.addEventListener('api-call', (event) => {
+                const data = JSON.parse(event.data);
+                this.handleAPICall(data);
+            });
+            
+            return true;
+            
+        } catch (error) {
+            console.error('❌ Failed to initialize SSE:', error);
+            return false;
+        }
+    }
+    
+    // Socket.IO fallback for bidirectional communication
     initializeSocketIO() {
         try {
             console.log('🔌 Connecting to backend Socket.IO:', this.backendUrl);
-            console.log('🔌 Connection attempt from:', window.location.origin);
             
             this.socketIO = io(this.backendUrl, {
                 transports: ['websocket', 'polling'],
                 timeout: 20000,
                 reconnection: true,
                 reconnectionDelay: 1000,
-                reconnectionAttempts: 5,
-                forceNew: true,
-                upgrade: true
+                reconnectionAttempts: 3, // Reduced attempts
+                forceNew: true
             });
             
             this.socketIO.on('connect', () => {
@@ -915,15 +986,29 @@ class KitchenAssistant {
         // Clear any existing content
         container.innerHTML = '';
         
-        // Create YouTube iframe for embedded playback
+        // Create YouTube iframe for embedded playback with privacy-enhanced mode
         const iframe = document.createElement('iframe');
         iframe.id = 'youtubeFrame';
-        iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0&modestbranding=1&fs=1&enablejsapi=1`;
+        iframe.src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0&modestbranding=1&fs=1&enablejsapi=1&privacy_mode=1`;
         iframe.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;border:none;border-radius:8px;';
         iframe.setAttribute('frameborder', '0');
         iframe.setAttribute('allowfullscreen', 'true');
         iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
         iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+        iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation');
+        iframe.setAttribute('loading', 'lazy');
+        
+        // Add error handling for iframe loading
+        iframe.onerror = () => {
+            console.warn('⚠️ YouTube iframe failed to load, possibly blocked by ad blocker');
+            loadingDiv.innerHTML = `
+                <div style="text-align: center; color: #ff6b6b;">
+                    <i class="fas fa-exclamation-triangle" style="font-size: 24px; margin-bottom: 10px;"></i>
+                    <br>Video failed to load
+                    <br><small>This may be due to ad blockers or network restrictions</small>
+                </div>
+            `;
+        };
         
         // Create loading indicator
         const loadingDiv = document.createElement('div');
@@ -1126,6 +1211,124 @@ class KitchenAssistant {
         return status;
     }
     
+    // Unified message handling for both SSE and WebSocket
+    handleBroadcastMessage(data) {
+        console.log('📨 Received broadcast message:', data);
+        
+        switch (data.type) {
+            case 'timer':
+                this.handleTimerEvent(data);
+                break;
+            case 'api-call':
+                this.handleAPICall(data);
+                break;
+            case 'system':
+                this.handleSystemMessage(data);
+                break;
+            default:
+                console.log('🔄 Unknown message type:', data.type);
+        }
+    }
+    
+    // Handle timer-related events
+    handleTimerEvent(data) {
+        switch (data.action) {
+            case 'started':
+                this.handleTimerStarted(data);
+                break;
+            case 'update':
+                this.handleTimerUpdate(data);
+                break;
+            case 'done':
+                this.handleTimerDone(data);
+                break;
+            case 'stopped':
+                this.handleTimerStopped(data);
+                break;
+        }
+    }
+    
+    // Handle system messages
+    handleSystemMessage(data) {
+        console.log('📢 System message:', data.message);
+        if (data.message) {
+            this.showNotification('System', data.message);
+        }
+    }
+    
+    // HTTP Polling fallback (most reliable, works everywhere)
+    initializePolling() {
+        console.log('🔄 Initializing HTTP polling fallback...');
+        
+        this.pollingInterval = setInterval(async () => {
+            try {
+                const response = await fetch(`${this.backendUrl}/api/status`, {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Check for timer updates
+                    if (data.timers) {
+                        this.syncTimers(data.timers);
+                    }
+                    
+                    // Update connection status
+                    if (!this.isConnected) {
+                        this.updateConnectionStatus('Connected (Polling)', true);
+                        this.isConnected = true;
+                    }
+                } else {
+                    if (this.isConnected) {
+                        this.updateConnectionStatus('Polling Error', false);
+                        this.isConnected = false;
+                    }
+                }
+            } catch (error) {
+                if (this.isConnected) {
+                    console.error('❌ Polling error:', error);
+                    this.updateConnectionStatus('Connection Error', false);
+                    this.isConnected = false;
+                }
+            }
+        }, 2000); // Poll every 2 seconds
+        
+        this.updateConnectionStatus('Connected (Polling)', true);
+        console.log('✅ HTTP polling started');
+    }
+    
+    // Sync timers from polling data
+    syncTimers(serverTimers) {
+        // Simple timer sync - compare with current timers
+        const serverTimerIds = new Set(serverTimers.map(t => t.id));
+        const localTimerIds = new Set(this.activeTimers.keys());
+        
+        // Add new timers
+        serverTimers.forEach(timer => {
+            if (!localTimerIds.has(timer.id)) {
+                this.activeTimers.set(timer.id, timer);
+            } else {
+                // Update existing timer
+                const localTimer = this.activeTimers.get(timer.id);
+                if (localTimer.secondsLeft !== timer.secondsLeft) {
+                    localTimer.secondsLeft = timer.secondsLeft;
+                    this.updateTimerItem(timer.id, timer.secondsLeft);
+                }
+            }
+        });
+        
+        // Remove completed timers
+        localTimerIds.forEach(id => {
+            if (!serverTimerIds.has(id)) {
+                this.activeTimers.delete(id);
+            }
+        });
+        
+        this.renderActiveTimers();
+    }
+    
     // Test backend connectivity
     async testBackendConnectivity() {
         try {
@@ -1240,6 +1443,10 @@ class KitchenAssistant {
 // ElevenLabs Conversation Variables
 let conversation = null;
 let conversationHistory = [];
+let lastReconnectAttempt = 0;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_COOLDOWN = 10000; // 10 seconds
 
 // DOM elements - Wait for DOM to load
 let connectionStatus, agentStatus, startButton, stopButton;
@@ -1280,14 +1487,21 @@ async function startConversation() {
         const signedUrl = await getSignedUrl();
         console.log('🔗 Got signed URL for ElevenLabs');
         
-        // Close any existing ElevenLabs connection
+        // Close any existing ElevenLabs connection properly
         if (conversation) {
             try {
+                console.log('🔌 Closing existing ElevenLabs connection');
                 await conversation.endSession();
                 wsManager.removeConnection('elevenlabs');
-                console.log('🔌 Closed existing ElevenLabs connection');
+                conversation = null;
+                console.log('✅ Existing connection cleaned up');
+                // Wait for cleanup to complete
+                await new Promise(resolve => setTimeout(resolve, 500));
             } catch (error) {
                 console.warn('⚠️ Error closing existing conversation:', error);
+                // Force cleanup even if error
+                wsManager.removeConnection('elevenlabs');
+                conversation = null;
             }
         }
 
@@ -1442,6 +1656,10 @@ async function startConversation() {
                 stopButton.disabled = false;
                 window.kitchenAssistant.updateConnectionStatus('Connected', true);
                 wsManager.addConnection('elevenlabs', conversation);
+                
+                // Reset reconnection attempts on successful connection
+                reconnectAttempts = 0;
+                lastReconnectAttempt = 0;
             },
             onDisconnect: (reason) => {
                 console.log('🔌 ElevenLabs conversation disconnected:', reason);
@@ -1451,12 +1669,42 @@ async function startConversation() {
                 window.kitchenAssistant.updateConnectionStatus('Disconnected', false);
                 wsManager.removeConnection('elevenlabs');
                 
-                // Auto-reconnect if not intentional
-                if (reason !== 'user_initiated' && window.kitchenAssistant.autoReconnect) {
+                // Check for specific error messages
+                const isAgentMisconfigured = reason && reason.message && 
+                    reason.message.includes('appears to be misconfigured');
+                
+                if (isAgentMisconfigured) {
+                    console.error('🚫 ElevenLabs Agent Configuration Error');
+                    window.kitchenAssistant.showNotification('Configuration Error', 
+                        'ElevenLabs AI agent is misconfigured. Please check the agent setup.');
+                    return; // Don't auto-reconnect for config errors
+                }
+                
+                // Auto-reconnect if not intentional and not a config error
+                if (reason.reason !== 'user' && window.kitchenAssistant.autoReconnect && !isAgentMisconfigured) {
+                    const now = Date.now();
+                    
+                    // Check if we're within cooldown period
+                    if (now - lastReconnectAttempt < RECONNECT_COOLDOWN) {
+                        console.log('🚫 Reconnection cooldown active, skipping attempt');
+                        return;
+                    }
+                    
+                    // Check if we've exceeded max attempts in this session
+                    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                        console.log('🚫 Max reconnection attempts reached');
+                        window.kitchenAssistant.showNotification('Connection Failed', 
+                            'Unable to maintain connection. Please try again later.');
+                        return;
+                    }
+                    
+                    reconnectAttempts++;
+                    lastReconnectAttempt = now;
+                    
                     setTimeout(() => {
-                        console.log('🔄 Attempting to reconnect ElevenLabs...');
+                        console.log(`🔄 Attempting to reconnect ElevenLabs... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
                         startConversation();
-                    }, 3000);
+                    }, 5000); // Increased delay
                 }
             },
             onError: (error) => {
@@ -1626,10 +1874,48 @@ document.addEventListener('DOMContentLoaded', () => {
             await window.kitchenAssistant.testBackendConnectivity();
             window.kitchenAssistant.testConnection();
             setTimeout(() => window.kitchenAssistant.checkSystemStatus(), 2000);
+        },
+        resetElevenLabs: () => {
+            console.log('🔄 Resetting ElevenLabs connection...');
+            if (conversation) {
+                conversation.endSession();
+                conversation = null;
+            }
+            wsManager.removeConnection('elevenlabs');
+            reconnectAttempts = 0;
+            lastReconnectAttempt = 0;
+            console.log('✅ ElevenLabs reset complete');
+        },
+        testElevenLabs: async () => {
+            try {
+                const signedUrl = await getSignedUrl();
+                console.log('✅ ElevenLabs signed URL obtained:', signedUrl ? 'Success' : 'Failed');
+                return signedUrl;
+            } catch (error) {
+                console.error('❌ ElevenLabs test failed:', error);
+                return null;
+            }
+        },
+        switchToPolling: () => {
+            console.log('🔄 Switching to HTTP polling mode...');
+            if (window.kitchenAssistant.eventSource) {
+                window.kitchenAssistant.eventSource.close();
+                window.kitchenAssistant.eventSource = null;
+            }
+            if (window.kitchenAssistant.socketIO) {
+                window.kitchenAssistant.socketIO.disconnect();
+                window.kitchenAssistant.socketIO = null;
+            }
+            window.kitchenAssistant.initializePolling();
         }
     };
     
     console.log('Kitchen Assistant loaded. Use window.debugKitchen for debugging functions.');
+    
+    // Check for common blocking issues
+    setTimeout(() => {
+        checkForBlockingIssues();
+    }, 2000);
     
     // Load conversation history
     fetchConversationHistory();
@@ -1648,6 +1934,48 @@ window.addEventListener('beforeunload', () => {
         }
     }
 });
+
+// Function to check for common blocking issues
+function checkForBlockingIssues() {
+    console.log('🔍 Checking for blocking issues...');
+    
+    const issues = [];
+    
+    // Check for ad blockers by testing a common blocked request pattern
+    const testImg = new Image();
+    testImg.onerror = () => {
+        issues.push('Ad blocker detected - may block YouTube and other requests');
+    };
+    testImg.src = 'https://googleads.g.doubleclick.net/pagead/id';
+    
+    // Check WebSocket support
+    if (!window.WebSocket) {
+        issues.push('WebSocket not supported in this browser');
+    }
+    
+    // Check for strict content security policies
+    try {
+        eval('1+1'); // This will fail if CSP blocks eval
+    } catch (e) {
+        if (e.name === 'EvalError') {
+            issues.push('Strict Content Security Policy may block some features');
+        }
+    }
+    
+    setTimeout(() => {
+        if (issues.length > 0) {
+            console.warn('⚠️ Potential blocking issues detected:');
+            issues.forEach(issue => console.warn('  -', issue));
+            
+            if (window.kitchenAssistant) {
+                window.kitchenAssistant.showNotification('Browser Issues Detected', 
+                    `Found ${issues.length} potential issues that may affect functionality. Check console for details.`);
+            }
+        } else {
+            console.log('✅ No blocking issues detected');
+        }
+    }, 1000);
+}
 
 // WebSocket connections are properly managed by the wsManager
 console.log('� WebSocket conflict prevention system loaded');
