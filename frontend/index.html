@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>ElevenLabs Agents</title>
+        <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+        <script type="importmap">
+        {
+            "imports": {
+                "@elevenlabs/client": "https://esm.sh/@elevenlabs/client@0.6.2"
+            }
+        }
+        </script>
+    </head>
+    <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+        <h1>ElevenLabs Agents</h1>
+        <div style="margin-bottom: 20px;">
+            <button id="startButton" style="padding: 10px 20px; margin: 5px;">Start Conversation</button>
+            <button id="stopButton" style="padding: 10px 20px; margin: 5px;" disabled>Stop Conversation</button>
+        </div>
+        <div style="font-size: 18px;">
+            <p>Status: <span id="connectionStatus">Disconnected</span></p>
+            <p>Agent is <span id="agentStatus">listening</span></p>
+        </div>
+        <div id="conversationSection" style="max-width:600px;margin:30px auto;text-align:left;background:#f9f9f9;padding:20px;border-radius:8px;box-shadow:0 2px 8px #ccc;">
+            <h2>Conversation</h2>
+            <div id="messages" style="min-height:150px;"></div>
+            <form id="chatForm" style="display:flex;gap:10px;margin-top:15px;">
+                <input id="userInput" type="text" placeholder="Type your message..." style="flex:1;padding:8px;" required />
+                <button type="submit" style="padding:8px 16px;">Send</button>
+            </form>
+        </div>
+        <script type="module" src="script.js"></script>
+    </body>
+</html>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+        
+        .status-bar {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 10px 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ff4444;
+        }
+        
+        .status-dot.connected {
+            background: #44ff44;
+        }
+        
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .panel {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+        }
+        
+        .panel:hover {
+            transform: translateY(-5px);
+        }
+        
+        .panel h3 {
+            color: #667eea;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .panel h3 i {
+            font-size: 1.2rem;
+        }
+        
+        .chat-panel {
+            grid-column: 1 / -1;
+        }
+        
+        .messages {
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            background: #f8f9fa;
+        }
+        
+        .message {
+            margin-bottom: 15px;
+            padding: 10px 15px;
+            border-radius: 10px;
+            max-width: 80%;
+        }
+        
+        .message.user {
+            background: #667eea;
+            color: white;
+            margin-left: auto;
+            text-align: right;
+        }
+        
+        .message.agent {
+            background: #e9ecef;
+            color: #333;
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .input-group input,
+        .input-group select {
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        
+        .input-group input {
+            flex: 1;
+        }
+        
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .btn:hover {
+            background: #5a6fd8;
+        }
+        
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .btn.danger {
+            background: #dc3545;
+        }
+        
+        .btn.danger:hover {
+            background: #c82333;
+        }
+        
+        .btn.success {
+            background: #28a745;
+        }
+        
+        .btn.success:hover {
+            background: #218838;
+        }
+        
+        .timer-display {
+            font-size: 2rem;
+            font-weight: bold;
+            text-align: center;
+            color: #667eea;
+            margin: 20px 0;
+        }
+        
+        .youtube-player {
+            margin-top: 15px;
+        }
+        
+        .video-container {
+            position: relative;
+            width: 100%;
+            height: 0;
+            padding-bottom: 56.25%; /* 16:9 aspect ratio */
+            margin-bottom: 15px;
+        }
+        
+        .video-container iframe {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border-radius: 10px;
+        }
+        
+        .search-results {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+        
+        .search-result {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+        
+        .search-result:hover {
+            background: #f8f9fa;
+        }
+        
+        .search-result:last-child {
+            border-bottom: none;
+        }
+        
+        .voice-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .voice-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 1.2rem;
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .voice-btn.listening {
+            background: #28a745;
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+        
+        .conversion-result {
+            background: #e9ecef;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 10px;
+            font-weight: bold;
+            text-align: center;
+        }
+        
+        @media (max-width: 768px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .status-bar {
+                flex-direction: column;
+                gap: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><i class="fas fa-robot"></i> Kitchen Smart Assistant</h1>
+            <p>Your AI-powered kitchen companion with voice controls</p>
+        </div>
+        
+        <div class="status-bar">
+            <div class="status-indicator">
+                <div class="status-dot" id="connectionStatus"></div>
+                <span id="connectionText">Connecting...</span>
+            </div>
+            <div class="status-indicator">
+                <i class="fas fa-microphone"></i>
+                <span id="voiceStatus">Voice Ready</span>
+            </div>
+        </div>
+        
+        <div class="dashboard">
+            <!-- Chat Panel -->
+            <div class="panel chat-panel">
+                <h3><i class="fas fa-comments"></i> AI Conversation</h3>
+                <div class="messages" id="messages"></div>
+                <div class="input-group">
+                    <input type="text" id="userInput" placeholder="Ask me anything about cooking, recipes, or kitchen tips..." />
+                    <button class="btn" id="sendBtn"><i class="fas fa-paper-plane"></i> Send</button>
+                    <button class="voice-btn" id="voiceBtn" title="Voice Input"><i class="fas fa-microphone"></i></button>
+                </div>
+            </div>
+            
+            <!-- Timer Panel -->
+            <div class="panel">
+                <h3><i class="fas fa-stopwatch"></i> Kitchen Timer</h3>
+                <div class="input-group">
+                    <input type="number" id="timerMinutes" placeholder="Minutes" min="1" max="60" />
+                    <input type="number" id="timerSeconds" placeholder="Seconds" min="0" max="59" />
+                    <button class="btn success" id="startTimer"><i class="fas fa-play"></i> Start</button>
+                </div>
+                <div class="timer-display" id="timerDisplay">00:00</div>
+                <div class="input-group">
+                    <button class="btn danger" id="stopTimer" disabled><i class="fas fa-stop"></i> Stop Timer</button>
+                </div>
+            </div>
+            
+            <!-- Unit Converter Panel -->
+            <div class="panel">
+                <h3><i class="fas fa-balance-scale"></i> Unit Converter</h3>
+                <div class="input-group">
+                    <input type="number" id="convertValue" placeholder="Amount" step="0.01" />
+                    <select id="fromUnit">
+                        <option value="cup">Cup</option>
+                        <option value="tablespoon">Tablespoon</option>
+                        <option value="teaspoon">Teaspoon</option>
+                        <option value="ounce">Ounce</option>
+                        <option value="pound">Pound</option>
+                        <option value="gram">Gram</option>
+                        <option value="kilogram">Kilogram</option>
+                        <option value="liter">Liter</option>
+                        <option value="milliliter">Milliliter</option>
+                        <option value="fahrenheit">Fahrenheit</option>
+                        <option value="celsius">Celsius</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <select id="toUnit">
+                        <option value="milliliter">Milliliter</option>
+                        <option value="cup">Cup</option>
+                        <option value="tablespoon">Tablespoon</option>
+                        <option value="teaspoon">Teaspoon</option>
+                        <option value="ounce">Ounce</option>
+                        <option value="pound">Pound</option>
+                        <option value="gram">Gram</option>
+                        <option value="kilogram">Kilogram</option>
+                        <option value="liter">Liter</option>
+                        <option value="fahrenheit">Fahrenheit</option>
+                        <option value="celsius">Celsius</option>
+                    </select>
+                    <button class="btn" id="convertBtn"><i class="fas fa-exchange-alt"></i> Convert</button>
+                </div>
+                <div class="conversion-result" id="conversionResult" style="display: none;"></div>
+            </div>
+            
+            <!-- YouTube Panel -->
+            <div class="panel">
+                <h3><i class="fab fa-youtube"></i> Cooking Videos</h3>
+                <div class="input-group">
+                    <input type="text" id="youtubeQuery" placeholder="Search cooking videos..." />
+                    <button class="btn" id="searchYoutube"><i class="fas fa-search"></i> Search</button>
+                </div>
+                <div class="search-results" id="searchResults" style="display: none;"></div>
+                <div class="youtube-player" id="youtubePlayer" style="display: none;">
+                    <div class="video-container" id="videoContainer"></div>
+                    <div class="voice-controls">
+                        <button class="btn" id="playPause"><i class="fas fa-play"></i> Play/Pause</button>
+                        <button class="btn" id="volumeUp"><i class="fas fa-volume-up"></i> +</button>
+                        <button class="btn" id="volumeDown"><i class="fas fa-volume-down"></i> -</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script type="module" src="script.js"></script>
+</body>
+</html>
