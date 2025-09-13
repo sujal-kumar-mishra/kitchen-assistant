@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: kitchen-assistant-frontend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BACKEND_URL
+        value: https://kitchen-assistant-backend.onrender.com
+    healthCheckPath: /

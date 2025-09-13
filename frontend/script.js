@@ -11,6 +11,11 @@ class KitchenAssistant {
         this.currentVideo = null;
         this.activeTimers = new Map();
         
+        // Set backend URL based on environment
+        this.backendUrl = window.location.hostname === 'localhost' ? 
+            'http://localhost:3000' : 
+            'https://kitchen-assistant-8quk.onrender.com';
+        
         this.init();
     }
     
@@ -26,7 +31,7 @@ class KitchenAssistant {
     // Socket.IO for real-time features (timers)
     initializeSocketIO() {
         try {
-            this.socketIO = io('http://localhost:3000');
+            this.socketIO = io(this.backendUrl);
             
             this.socketIO.on('connect', () => {
                 console.log('Socket.IO connected');
@@ -62,6 +67,12 @@ class KitchenAssistant {
                         this.updateTimerDisplay(timer.secondsLeft);
                     });
                 }
+            });
+            
+            // Listen for API calls from voice agent or other sources
+            this.socketIO.on('api:call', (data) => {
+                console.log('API call detected:', data);
+                this.handleApiCallUpdate(data);
             });
         } catch (error) {
             console.error('Socket.IO initialization error:', error);
@@ -116,9 +127,32 @@ class KitchenAssistant {
         document.getElementById('convertBtn').addEventListener('click', () => this.convertUnits());
         
         // YouTube functionality
-        document.getElementById('searchYoutube').addEventListener('click', () => this.searchYoutube());
+        document.getElementById('searchYoutube').addEventListener('click', () => {
+            const query = document.getElementById('youtubeQuery').value.trim();
+            if (query) {
+                // Immediate UI feedback
+                const searchBtn = document.getElementById('searchYoutube');
+                searchBtn.disabled = true;
+                searchBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Searching...';
+                
+                this.searchYoutube(query).finally(() => {
+                    // Reset button state
+                    searchBtn.disabled = false;
+                    searchBtn.innerHTML = '<i class="fas fa-search"></i> Search';
+                });
+            } else {
+                alert('Please enter a search query');
+            }
+        });
         document.getElementById('youtubeQuery').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.searchYoutube();
+            if (e.key === 'Enter') {
+                const query = document.getElementById('youtubeQuery').value.trim();
+                if (query) {
+                    this.searchYoutube(query);
+                } else {
+                    alert('Please enter a search query');
+                }
+            }
         });
         
         // YouTube controls
@@ -137,29 +171,44 @@ class KitchenAssistant {
         this.addMessage('You', message);
         input.value = '';
         
+        // Show typing indicator
+        const typingIndicator = this.addMessage('Agent', '💭 Thinking...', true);
+        
         try {
-            const response = await fetch('http://localhost:3000/api/converse', {
+            const response = await fetch(`${this.backendUrl}/api/converse`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ message })
             });
             
+            // Remove typing indicator
+            if (typingIndicator && typingIndicator.parentNode) {
+                typingIndicator.remove();
+            }
+            
             const data = await response.json();
             if (data.reply) {
                 this.addMessage('Agent', data.reply);
                 this.speak(data.reply);
+                // Update connection status
+                this.updateConnectionStatus('Connected', true);
             } else {
                 this.addMessage('Agent', 'No response received.');
             }
         } catch (error) {
             console.error('Error sending message:', error);
+            // Remove typing indicator on error
+            if (typingIndicator && typingIndicator.parentNode) {
+                typingIndicator.remove();
+            }
             this.addMessage('System', 'Error: Unable to send message. Please check connection.');
+            this.updateConnectionStatus('Connection Error', false);
         }
     }
     
     async fetchConversationHistory() {
         try {
-            const response = await fetch('http://localhost:3000/api/conversation-history');
+            const response = await fetch(`${this.backendUrl}/api/conversation-history`);
             const data = await response.json();
             
             if (data.history && Array.isArray(data.history)) {
@@ -189,6 +238,8 @@ class KitchenAssistant {
         if (scroll) {
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
+        
+        return messageElement; // Return element for potential removal
     }
     
     // Voice functionality
@@ -294,8 +345,12 @@ class KitchenAssistant {
             return;
         }
         
+        // Immediate UI feedback
+        document.getElementById('startTimer').disabled = true;
+        document.getElementById('startTimer').innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
+        
         try {
-            const response = await fetch('http://localhost:3000/api/timer/start', {
+            const response = await fetch(`${this.backendUrl}/api/timer/start`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ seconds: totalSeconds })
@@ -303,8 +358,17 @@ class KitchenAssistant {
             
             const data = await response.json();
             console.log('Timer started:', data);
+            
+            // Reset button state
+            document.getElementById('startTimer').disabled = false;
+            document.getElementById('startTimer').innerHTML = '<i class="fas fa-play"></i> Start';
+            
         } catch (error) {
             console.error('Error starting timer:', error);
+            // Reset button state on error
+            document.getElementById('startTimer').disabled = false;
+            document.getElementById('startTimer').innerHTML = '<i class="fas fa-play"></i> Start';
+            alert('Failed to start timer. Please check connection.');
         }
     }
     
@@ -313,7 +377,7 @@ class KitchenAssistant {
         if (!timerId) return;
         
         try {
-            const response = await fetch('http://localhost:3000/api/timer/stop', {
+            const response = await fetch(`${this.backendUrl}/api/timer/stop`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id: timerId })
@@ -358,6 +422,86 @@ class KitchenAssistant {
         document.getElementById('timerDisplay').textContent = display;
     }
     
+    // Handle real-time API call updates from WebSocket
+    handleApiCallUpdate(data) {
+        console.log('Handling API update:', data.url, data.response);
+        
+        // Handle different API endpoints
+        if (data.url.includes('/converse')) {
+            if (data.response && data.response.reply) {
+                this.addMessage('Agent', `🎤 ${data.response.reply}`);
+                this.showNotification('Voice Agent', data.response.reply);
+            }
+        }
+        
+        else if (data.url.includes('/convert')) {
+            if (data.response && data.response.result !== undefined) {
+                const { value, from, to, result } = data.query;
+                const resultDiv = document.getElementById('conversionResult');
+                resultDiv.textContent = `${value} ${from} = ${result} ${to}`;
+                resultDiv.style.display = 'block';
+                resultDiv.style.backgroundColor = '#e8f5e8';
+                resultDiv.style.color = '#2e7d32';
+                this.showNotification('Unit Conversion', `${value} ${from} = ${result} ${to}`);
+            }
+        }
+        
+        else if (data.url.includes('/youtube/search')) {
+            if (data.response && Array.isArray(data.response)) {
+                this.displaySearchResults(data.response);
+                this.showNotification('YouTube Search', `Found ${data.response.length} videos`);
+            }
+        }
+        
+        else if (data.url.includes('/timer/start')) {
+            if (data.response && data.response.id) {
+                this.showNotification('Timer Started', `Timer set for ${Math.floor(data.body.seconds / 60)}:${String(data.body.seconds % 60).padStart(2, '0')}`);
+            }
+        }
+        
+        else if (data.url.includes('/get-signed-url')) {
+            this.showNotification('ElevenLabs', 'Voice conversation ready');
+        }
+        
+        // Update connection status for any successful API call
+        if (data.status >= 200 && data.status < 300) {
+            this.updateConnectionStatus('API Active', true);
+            
+            // Show activity indicator
+            this.showApiActivity(data.method, data.url);
+        } else {
+            this.updateConnectionStatus('API Error', false);
+        }
+    }
+    
+    // Show API activity indicator
+    showApiActivity(method, url) {
+        const indicator = document.createElement('div');
+        indicator.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(102, 126, 234, 0.9);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            z-index: 1000;
+            animation: slideIn 0.3s ease-out;
+        `;
+        indicator.innerHTML = `📡 ${method} ${url.split('/').pop()}`;
+        
+        document.body.appendChild(indicator);
+        
+        // Remove after 3 seconds
+        setTimeout(() => {
+            if (indicator.parentNode) {
+                indicator.style.animation = 'slideOut 0.3s ease-out';
+                setTimeout(() => indicator.remove(), 300);
+            }
+        }, 3000);
+    }
+    
     // Unit conversion
     async convertUnits() {
         const value = parseFloat(document.getElementById('convertValue').value);
@@ -369,64 +513,281 @@ class KitchenAssistant {
             return;
         }
         
+        // Immediate UI feedback
+        const convertBtn = document.getElementById('convertBtn');
+        const originalText = convertBtn.innerHTML;
+        convertBtn.disabled = true;
+        convertBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Converting...';
+        
+        const resultDiv = document.getElementById('conversionResult');
+        resultDiv.style.display = 'block';
+        resultDiv.textContent = 'Converting...';
+        
         try {
-            const response = await fetch(`http://localhost:3000/api/convert?value=${value}&from=${fromUnit}&to=${toUnit}`);
+            const response = await fetch(`${this.backendUrl}/api/convert?value=${value}&from=${fromUnit}&to=${toUnit}`);
             const data = await response.json();
             
             if (data.result !== undefined) {
-                const resultDiv = document.getElementById('conversionResult');
                 resultDiv.textContent = `${value} ${fromUnit} = ${data.result} ${toUnit}`;
-                resultDiv.style.display = 'block';
+                resultDiv.style.backgroundColor = '#e8f5e8';
+                resultDiv.style.color = '#2e7d32';
                 this.speak(`${value} ${fromUnit} equals ${data.result} ${toUnit}`);
             } else {
-                alert('Conversion not supported');
+                resultDiv.textContent = 'Conversion not supported';
+                resultDiv.style.backgroundColor = '#ffebee';
+                resultDiv.style.color = '#c62828';
             }
         } catch (error) {
             console.error('Error converting units:', error);
+            resultDiv.textContent = 'Error: Unable to convert. Please check connection.';
+            resultDiv.style.backgroundColor = '#ffebee';
+            resultDiv.style.color = '#c62828';
+        } finally {
+            // Reset button state
+            convertBtn.disabled = false;
+            convertBtn.innerHTML = originalText;
         }
     }
     
     // YouTube functionality
-    async searchYoutube() {
-        const query = document.getElementById('youtubeQuery').value.trim();
-        if (!query) return;
+    async searchYoutube(query) {
+        if (!query || typeof query !== 'string') return;
         
         try {
-            const response = await fetch(`http://localhost:3000/api/youtube/search?q=${encodeURIComponent(query + ' cooking')}`);
+            console.log('Searching YouTube for:', query);
+            const response = await fetch(`${this.backendUrl}/api/youtube/search?q=${encodeURIComponent(query)}`);
             const videos = await response.json();
+            console.log('YouTube search results:', videos);
             this.displaySearchResults(videos);
+            return videos;
         } catch (error) {
             console.error('Error searching YouTube:', error);
+            this.displaySearchResults([]);
         }
     }
     
     displaySearchResults(videos) {
-        const resultsDiv = document.getElementById('searchResults');
-        resultsDiv.innerHTML = '';
+        console.log('Displaying search results:', videos?.length || 0, 'videos');
         
-        if (videos.length === 0) {
-            resultsDiv.innerHTML = '<div class="search-result">No videos found</div>';
-            resultsDiv.style.display = 'block';
+        // Try both containers - the main dashboard and the compatibility section
+        let youtubeSection = document.getElementById('youtubeSection');
+        let resultsDiv = document.getElementById('videoResults');
+        let usingCompatibilitySection = true;
+        
+        // If the compatibility section doesn't exist, use the main dashboard
+        if (!youtubeSection || !resultsDiv) {
+            youtubeSection = document.getElementById('youtubePlayer');
+            resultsDiv = document.getElementById('searchResults');
+            usingCompatibilitySection = false;
+            console.log('Using main dashboard for results');
+        } else {
+            console.log('Using compatibility section for results');
+        }
+        
+        if (!youtubeSection || !resultsDiv) {
+            console.error('YouTube display elements not found');
+            console.log('Available elements:', {
+                youtubeSection: !!document.getElementById('youtubeSection'),
+                videoResults: !!document.getElementById('videoResults'),
+                youtubePlayer: !!document.getElementById('youtubePlayer'),
+                searchResults: !!document.getElementById('searchResults')
+            });
             return;
         }
         
-        videos.slice(0, 5).forEach(video => {
-            const resultDiv = document.createElement('div');
-            resultDiv.className = 'search-result';
-            resultDiv.innerHTML = `<strong>${video.title}</strong><br><small>by ${video.channelTitle}</small>`;
-            resultDiv.onclick = () => this.playVideo(video.videoId);
-            resultsDiv.appendChild(resultDiv);
+        resultsDiv.innerHTML = '';
+        
+        if (!videos || videos.length === 0) {
+            resultsDiv.innerHTML = '<div style="text-align:center;padding:20px;color:#666;">No videos found</div>';
+            youtubeSection.style.display = 'block';
+            return;
+        }
+        
+        videos.forEach(video => {
+            if (!video.id || !video.title) return;
+            
+            const videoCard = document.createElement('div');
+            videoCard.style.cssText = `
+                background: white;
+                border-radius: 8px;
+                padding: 10px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                cursor: pointer;
+                transition: transform 0.2s;
+            `;
+            
+            videoCard.innerHTML = `
+                <div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:4px;">
+                    <img src="${video.thumbnail || ''}" 
+                         style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;" 
+                         alt="${video.title}" />
+                    <div style="position:absolute;bottom:5px;right:5px;background:rgba(0,0,0,0.8);color:white;padding:2px 6px;border-radius:2px;font-size:12px;">
+                        ▶
+                    </div>
+                    <div style="position:absolute;top:5px;right:5px;">
+                        <div style="background:rgba(0,0,0,0.6);color:white;padding:2px 6px;border-radius:3px;font-size:10px;">
+                            ${Math.floor(Math.random() * 15) + 1}:${String(Math.floor(Math.random() * 60)).padStart(2, '0')}
+                        </div>
+                    </div>
+                </div>
+                <h4 style="margin:8px 0;font-size:14px;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">
+                    ${video.title}
+                </h4>
+                <p style="font-size:12px;color:#666;margin:0;">${video.channel || 'Unknown Channel'}</p>
+            `;
+            
+            videoCard.onmouseover = () => videoCard.style.transform = 'translateY(-2px)';
+            videoCard.onmouseout = () => videoCard.style.transform = 'translateY(0)';
+            
+            // Add click event with better error handling
+            videoCard.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('Video card clicked:', video.title, video.id);
+                this.playVideo(video.id, video.title);
+            });
+            
+            // Also add the onclick as fallback
+            videoCard.onclick = (e) => {
+                e.preventDefault();
+                console.log('Video card onclick:', video.title, video.id);
+                this.playVideo(video.id, video.title);
+            };
+            
+            resultsDiv.appendChild(videoCard);
         });
         
-        resultsDiv.style.display = 'block';
+        youtubeSection.style.display = 'block';
     }
     
-    playVideo(videoId) {
-        const container = document.getElementById('videoContainer');
-        container.innerHTML = `<iframe id="youtubeFrame" src="https://www.youtube.com/embed/${videoId}?enablejsapi=1&autoplay=1" frameborder="0" allowfullscreen></iframe>`;
-        document.getElementById('youtubePlayer').style.display = 'block';
-        document.getElementById('searchResults').style.display = 'none';
+    playVideo(videoId, title) {
+        console.log('Attempting to play video:', videoId, title);
+        
+        // Try main dashboard containers first
+        let container = document.getElementById('videoContainer');
+        let playerDiv = document.getElementById('youtubePlayer');
+        
+        // If main dashboard containers don't exist, try compatibility section
+        if (!container || !playerDiv) {
+            container = document.getElementById('videoContainer2');
+            playerDiv = document.getElementById('videoPlayer');
+            console.log('Using compatibility containers');
+        } else {
+            console.log('Using main dashboard containers');
+        }
+        
+        if (!container || !playerDiv) {
+            console.error('Video player elements not found');
+            console.log('Available elements:', {
+                videoContainer: !!document.getElementById('videoContainer'),
+                youtubePlayer: !!document.getElementById('youtubePlayer'),
+                videoContainer2: !!document.getElementById('videoContainer2'),
+                videoPlayer: !!document.getElementById('videoPlayer')
+            });
+            return;
+        }
+        
+        // Clear any existing content
+        container.innerHTML = '';
+        
+        // Create YouTube iframe for embedded playback
+        const iframe = document.createElement('iframe');
+        iframe.id = 'youtubeFrame';
+        iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0&modestbranding=1&fs=1&enablejsapi=1`;
+        iframe.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;border:none;border-radius:8px;';
+        iframe.setAttribute('frameborder', '0');
+        iframe.setAttribute('allowfullscreen', 'true');
+        iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
+        iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+        
+        // Create loading indicator
+        const loadingDiv = document.createElement('div');
+        loadingDiv.style.cssText = `
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            z-index: 10;
+        `;
+        loadingDiv.innerHTML = `
+            <div style="font-size: 24px; margin-bottom: 10px;">⏳</div>
+            <div>Loading video...</div>
+            <div style="font-size: 12px; margin-top: 10px; opacity: 0.7;">${title || 'YouTube Video'}</div>
+        `;
+        
+        // Add loading indicator first
+        container.appendChild(loadingDiv);
+        
+        // Add iframe loading handlers
+        iframe.onload = () => {
+            console.log('YouTube iframe loaded successfully');
+            // Remove loading indicator
+            if (loadingDiv.parentNode) {
+                loadingDiv.remove();
+            }
+        };
+        
+        iframe.onerror = () => {
+            console.error('YouTube iframe failed to load');
+            loadingDiv.innerHTML = `
+                <div style="font-size: 24px; margin-bottom: 10px;">❌</div>
+                <div>Failed to load video</div>
+                <div style="margin-top: 15px;">
+                    <button onclick="window.open('https://www.youtube.com/watch?v=${videoId}', '_blank')" 
+                            style="background: #ff0000; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+                        Open in YouTube
+                    </button>
+                </div>
+            `;
+        };
+        
+        // Add the iframe to the container
+        container.appendChild(iframe);
+        
+        // Remove loading indicator after timeout if still present
+        setTimeout(() => {
+            if (loadingDiv.parentNode) {
+                loadingDiv.innerHTML = `
+                    <div style="font-size: 24px; margin-bottom: 10px;">⚠️</div>
+                    <div>Video is taking time to load</div>
+                    <div style="margin-top: 15px;">
+                        <button onclick="this.parentElement.parentElement.remove()" 
+                                style="background: #666; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-right: 10px;">
+                            Close
+                        </button>
+                        <button onclick="window.open('https://www.youtube.com/watch?v=${videoId}', '_blank')" 
+                                style="background: #ff0000; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+                            Open in YouTube
+                        </button>
+                    </div>
+                `;
+            }
+        }, 8000);
+        
+        playerDiv.style.display = 'block';
         this.currentVideo = videoId;
+        
+        // Add close video functionality
+        const closeBtn = document.getElementById('closeVideo');
+        if (closeBtn) {
+            closeBtn.onclick = () => {
+                container.innerHTML = '';
+                playerDiv.style.display = 'none';
+                this.currentVideo = null;
+                console.log('Video closed');
+            };
+        }
+        
+        // Scroll to video player
+        playerDiv.scrollIntoView({ behavior: 'smooth' });
+        
+        console.log('Video iframe created and added to container');
+        console.log('Playing video:', title || videoId);
     }
     
     togglePlayPause() {
@@ -486,7 +847,11 @@ function initializeDOMElements() {
 }
 
 async function getSignedUrl() {
-    const response = await fetch('http://localhost:3000/api/get-signed-url');
+    const backendUrl = window.location.hostname === 'localhost' ? 
+        'http://localhost:3000' : 
+        'https://kitchen-assistant-backend.onrender.com';
+    
+    const response = await fetch(`${backendUrl}/api/get-signed-url`);
     if (!response.ok) {
         throw new Error(`Failed to get signed url: ${response.statusText}`);
     }
@@ -510,8 +875,111 @@ async function startConversation() {
                 displayMessage: async (parameters) => {
                     appendMessage('Agent', parameters.text);
                     renderConversationHistory(); // Ensure conversation section updates
-                    alert(parameters.text);
                     return "Message displayed";
+                },
+                searchYoutube: async (parameters) => {
+                    const query = parameters.query || parameters.q;
+                    if (!query) {
+                        return "No search query provided";
+                    }
+                    
+                    appendMessage('System', `🎤 Voice Agent: Searching YouTube for: ${query}`);
+                    
+                    // Call the backend API which will trigger WebSocket updates
+                    try {
+                        const response = await fetch(`http://localhost:3000/api/youtube/search?q=${encodeURIComponent(query)}`);
+                        const videos = await response.json();
+                        
+                        if (videos && videos.length > 0) {
+                            // The WebSocket will handle the UI update, but we also update here for immediate feedback
+                            window.kitchenAssistant.displaySearchResults(videos);
+                            appendMessage('System', `🎤 Voice Agent: Found ${videos.length} videos`);
+                            return `Found ${videos.length} YouTube videos for "${query}". Videos are displayed above for you to play.`;
+                        } else {
+                            appendMessage('System', '🎤 Voice Agent: No videos found');
+                            return `No YouTube videos found for "${query}".`;
+                        }
+                    } catch (error) {
+                        console.error('Voice agent YouTube search error:', error);
+                        appendMessage('System', '🎤 Voice Agent: Error searching videos');
+                        return `Sorry, I encountered an error while searching for "${query}".`;
+                    }
+                },
+                
+                setTimer: async (parameters) => {
+                    console.log('Voice agent setting timer:', parameters);
+                    const duration = parameters.duration || parameters.minutes || parameters.seconds;
+                    if (!duration) {
+                        return "Please specify timer duration";
+                    }
+                    
+                    let seconds = 0;
+                    if (typeof duration === 'string') {
+                        const match = duration.match(/(\d+)\s*(minute|min|second|sec)/i);
+                        if (match) {
+                            const value = parseInt(match[1]);
+                            const unit = match[2].toLowerCase();
+                            seconds = unit.startsWith('min') ? value * 60 : value;
+                        } else {
+                            seconds = parseInt(duration) || 0;
+                        }
+                    } else {
+                        seconds = parseInt(duration) || 0;
+                    }
+                    
+                    if (seconds <= 0) {
+                        return "Invalid timer duration";
+                    }
+                    
+                    appendMessage('System', `🎤 Voice Agent: Setting timer for ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`);
+                    
+                    try {
+                        const response = await fetch('http://localhost:3000/api/timer/start', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ seconds })
+                        });
+                        
+                        const data = await response.json();
+                        appendMessage('System', `🎤 Voice Agent: Timer started successfully`);
+                        return `Timer set for ${Math.floor(seconds/60)} minutes and ${seconds%60} seconds. I'll notify you when it's done.`;
+                    } catch (error) {
+                        console.error('Voice agent timer error:', error);
+                        appendMessage('System', '🎤 Voice Agent: Error setting timer');
+                        return "Sorry, I couldn't set the timer. Please try again.";
+                    }
+                },
+                
+                convertUnits: async (parameters) => {
+                    console.log('Voice agent converting units:', parameters);
+                    const { value, from, to, amount, fromUnit, toUnit } = parameters;
+                    
+                    const convertValue = value || amount;
+                    const fromUnitName = from || fromUnit;
+                    const toUnitName = to || toUnit;
+                    
+                    if (!convertValue || !fromUnitName || !toUnitName) {
+                        return "Please specify amount, from unit, and to unit for conversion";
+                    }
+                    
+                    appendMessage('System', `🎤 Voice Agent: Converting ${convertValue} ${fromUnitName} to ${toUnitName}`);
+                    
+                    try {
+                        const response = await fetch(`http://localhost:3000/api/convert?value=${convertValue}&from=${fromUnitName}&to=${toUnitName}`);
+                        const data = await response.json();
+                        
+                        if (data.result !== undefined) {
+                            appendMessage('System', `🎤 Voice Agent: ${convertValue} ${fromUnitName} = ${data.result} ${toUnitName}`);
+                            return `${convertValue} ${fromUnitName} equals ${data.result} ${toUnitName}.`;
+                        } else {
+                            appendMessage('System', '🎤 Voice Agent: Conversion not supported');
+                            return `Sorry, I can't convert from ${fromUnitName} to ${toUnitName}.`;
+                        }
+                    } catch (error) {
+                        console.error('Voice agent conversion error:', error);
+                        appendMessage('System', '🎤 Voice Agent: Error converting units');
+                        return "Sorry, I encountered an error during conversion.";
+                    }
                 },
             },
             onConnect: () => {
@@ -561,7 +1029,11 @@ function renderConversationHistory() {
 
 async function fetchConversationHistory() {
     try {
-        const res = await fetch('http://localhost:3000/api/conversation-history');
+        const backendUrl = window.location.hostname === 'localhost' ? 
+            'http://localhost:3000' : 
+            'https://kitchen-assistant-backend.onrender.com';
+        
+        const res = await fetch(`${backendUrl}/api/conversation-history`);
         const data = await res.json();
         if (Array.isArray(data.history)) {
             conversationHistory = data.history;
@@ -594,7 +1066,11 @@ function initializeEventListeners() {
             appendMessage('You', text);
             userInput.value = '';
             try {
-                const res = await fetch('http://localhost:3000/api/converse', {
+                const backendUrl = window.location.hostname === 'localhost' ? 
+                    'http://localhost:3000' : 
+                    'https://kitchen-assistant-backend.onrender.com';
+                
+                const res = await fetch(`${backendUrl}/api/converse`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message: text })

@@ -33,19 +33,19 @@ app.get('/status', (req, res) => {
     timestamp: new Date().toISOString(),
     endpoints: {
       conversation: {
-        'POST /api/converse': 'Send message to AI agent',
-        'GET /api/history': 'Get conversation history',
-        'GET /api/conversation-history': 'Get conversation history (exact match)',
-        'GET /api/get-signed-url': 'Get ElevenLabs signed URL'
+        'POST /converse': 'Send message to AI agent',
+        'GET /history': 'Get conversation history',
+        'GET /conversation-history': 'Get conversation history (exact match)',
+        'GET /get-signed-url': 'Get ElevenLabs signed URL'
       },
       timers: {
-        'GET /api/timer': 'List active timers',
-        'POST /api/timer/start': 'Start new timer',
-        'POST /api/timer/stop': 'Stop timer'
+        'GET /timer': 'List active timers',
+        'POST /timer/start': 'Start new timer',
+        'POST /timer/stop': 'Stop timer'
       },
       utilities: {
-        'GET /api/convert': 'Convert units',
-        'GET /api/youtube/search': 'Search YouTube'
+        'GET /convert': 'Convert units',
+        'GET /youtube/search': 'Search YouTube'
       }
     }
   });
@@ -57,6 +57,48 @@ const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } 
 
 // Initialize timer manager
 const timerManager = createTimerManager({ io, redisUrl: process.env.REDIS_URL });
+
+// Middleware to broadcast API calls to frontend
+app.use('/api', (req, res, next) => {
+  console.log(`API called: ${req.method} ${req.originalUrl}`);
+  
+  // Store original send function
+  const originalSend = res.send;
+  
+  // Override send to broadcast the response
+  res.send = function(data) {
+    // Call original send first
+    const result = originalSend.call(this, data);
+    
+    // Broadcast the API call to all connected clients
+    const apiData = {
+      method: req.method,
+      url: req.originalUrl,
+      timestamp: new Date().toISOString(),
+      status: res.statusCode,
+      body: req.body || null,
+      query: req.query || null
+    };
+    
+    // Try to parse response data if it's JSON
+    let responseData;
+    try {
+      responseData = typeof data === 'string' ? JSON.parse(data) : data;
+    } catch (e) {
+      responseData = data;
+    }
+    
+    // Broadcast to all connected clients
+    io.emit('api:call', {
+      ...apiData,
+      response: responseData
+    });
+    
+    return result;
+  };
+  
+  next();
+});
 
 // Use modular routes
 app.use('/api/convert', converterRoutes);
