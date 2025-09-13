@@ -198,6 +198,93 @@
             font-weight: bold;
             text-align: center;
             color: #667eea;
+        }
+        
+        .active-timers {
+            margin-top: 15px;
+        }
+        
+        .timer-item {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .timer-info {
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+        }
+        
+        .timer-name {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        
+        .timer-time {
+            font-size: 1.5rem;
+            color: #667eea;
+            font-weight: bold;
+        }
+        
+        .timer-controls {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .timer-btn {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background 0.3s ease;
+        }
+        
+        .timer-btn.stop {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .timer-btn.stop:hover {
+            background: #c82333;
+        }
+        
+        .timer-status {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        
+        .timer-status.running {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        
+        .timer-status.finished {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        @keyframes flash {
+            0%, 100% { background-color: #f8f9fa; }
+            50% { background-color: #d4edda; }
+        }
             margin: 20px 0;
         }
         
@@ -423,20 +510,6 @@
                 </div>
             </div>
             
-            <!-- Timer Panel -->
-            <div class="panel">
-                <h3><i class="fas fa-stopwatch"></i> Kitchen Timer</h3>
-                <div class="input-group">
-                    <input type="number" id="timerMinutes" placeholder="Minutes" min="1" max="60" />
-                    <input type="number" id="timerSeconds" placeholder="Seconds" min="0" max="59" />
-                    <button class="btn success" id="startTimer"><i class="fas fa-play"></i> Start</button>
-                </div>
-                <div class="timer-display" id="timerDisplay">00:00</div>
-                <div class="input-group">
-                    <button class="btn danger" id="stopTimer" disabled><i class="fas fa-stop"></i> Stop Timer</button>
-                </div>
-            </div>
-            
             <!-- Unit Converter Panel -->
             <div class="panel">
                 <h3><i class="fas fa-balance-scale"></i> Unit Converter</h3>
@@ -475,6 +548,19 @@
                 <div class="conversion-result" id="conversionResult" style="display: none;"></div>
             </div>
             
+            <!-- Timer Panel -->
+            <div class="panel">
+                <h3><i class="fas fa-clock"></i> Kitchen Timers</h3>
+                <div class="input-group">
+                    <input type="number" id="timerMinutes" placeholder="Minutes" min="0" max="60" value="5" />
+                    <input type="number" id="timerSeconds" placeholder="Seconds" min="0" max="59" value="0" />
+                    <button class="btn" id="startTimer"><i class="fas fa-play"></i> Start Timer</button>
+                </div>
+                <div class="active-timers" id="activeTimers">
+                    <!-- Active timers will be displayed here -->
+                </div>
+            </div>
+
             <!-- YouTube Panel -->
             <div class="panel">
                 <h3><i class="fab fa-youtube"></i> Cooking Videos</h3>

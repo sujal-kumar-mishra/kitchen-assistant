@@ -2,6 +2,48 @@
 
 import { Conversation } from '@elevenlabs/client';
 
+// WebSocket Manager to handle multiple connections
+class WebSocketManager {
+    constructor() {
+        this.connections = new Map();
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
+    }
+
+    addConnection(name, connection) {
+        this.connections.set(name, connection);
+        console.log(`🔗 Registered WebSocket: ${name}`);
+    }
+
+    removeConnection(name) {
+        if (this.connections.has(name)) {
+            this.connections.delete(name);
+            console.log(`🔌 Unregistered WebSocket: ${name}`);
+        }
+    }
+
+    getConnection(name) {
+        return this.connections.get(name);
+    }
+
+    closeAll() {
+        for (const [name, connection] of this.connections) {
+            try {
+                if (connection.close) {
+                    connection.close();
+                }
+                console.log(`🔌 Closed WebSocket: ${name}`);
+            } catch (error) {
+                console.error(`❌ Error closing WebSocket ${name}:`, error);
+            }
+        }
+        this.connections.clear();
+    }
+}
+
+// Initialize WebSocket manager
+const wsManager = new WebSocketManager();
+
 class KitchenAssistant {
     constructor() {
         this.socket = null;
@@ -10,6 +52,8 @@ class KitchenAssistant {
         this.synthesis = window.speechSynthesis;
         this.currentVideo = null;
         this.activeTimers = new Map();
+        this.pauseWebSocketBroadcasting = false;
+        this.autoReconnect = false;
         
         // Set backend URL based on environment
         this.backendUrl = window.location.hostname === 'localhost' ? 
@@ -25,22 +69,33 @@ class KitchenAssistant {
         this.bindEventListeners();
         this.updateConnectionStatus('Ready');
         this.fetchConversationHistory();
+        this.renderActiveTimers(); // Initialize empty timer container
     }
 
     
-    // Socket.IO for real-time features (timers)
+    // Socket.IO for real-time features (timers) with conflict prevention
     initializeSocketIO() {
         try {
-            this.socketIO = io(this.backendUrl);
+            console.log('🔌 Connecting to backend Socket.IO:', this.backendUrl);
             
-            this.socketIO.on('connect', () => {
-                console.log('Socket.IO connected');
-                this.updateConnectionStatus('Connected', true);
+            this.socketIO = io(this.backendUrl, {
+                transports: ['websocket', 'polling'],
+                timeout: 20000,
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionAttempts: 5
             });
             
-            this.socketIO.on('disconnect', () => {
-                console.log('Socket.IO disconnected');
+            this.socketIO.on('connect', () => {
+                console.log('✅ Socket.IO connected');
+                this.updateConnectionStatus('Connected', true);
+                wsManager.addConnection('backend', this.socketIO);
+            });
+            
+            this.socketIO.on('disconnect', (reason) => {
+                console.log('🔌 Socket.IO disconnected:', reason);
                 this.updateConnectionStatus('Disconnected', false);
+                wsManager.removeConnection('backend');
             });
             
             this.socketIO.on('timer:started', (data) => {
@@ -63,16 +118,30 @@ class KitchenAssistant {
                 console.log('Existing timers:', data.timers);
                 if (data.timers && data.timers.length > 0) {
                     data.timers.forEach(timer => {
-                        this.activeTimers.set(timer.id, timer);
-                        this.updateTimerDisplay(timer.secondsLeft);
+                        const timerData = {
+                            ...timer,
+                            name: this.generateTimerName(timer.secondsLeft),
+                            startTime: Date.now() - ((timer.originalSeconds || timer.secondsLeft) - timer.secondsLeft) * 1000
+                        };
+                        this.activeTimers.set(timer.id, timerData);
                     });
+                    this.renderActiveTimers();
                 }
             });
             
-            // Listen for API calls from voice agent or other sources
+            // Listen for API calls from voice agent or other sources with broadcasting pause
             this.socketIO.on('api:call', (data) => {
-                console.log('API call detected:', data);
+                if (this.pauseWebSocketBroadcasting) {
+                    console.log('⏸️ WebSocket broadcasting paused, skipping API call update');
+                    return;
+                }
+                
+                console.log('📡 API call detected:', data);
                 this.handleApiCallUpdate(data);
+            });
+            
+            this.socketIO.on('connect_error', (error) => {
+                console.error('❌ Socket.IO connection error:', error);
             });
         } catch (error) {
             console.error('Socket.IO initialization error:', error);
@@ -119,9 +188,16 @@ class KitchenAssistant {
         // Voice input
         document.getElementById('voiceBtn').addEventListener('click', () => this.toggleVoiceInput());
         
-        // Timer functionality
+        // Timer functionality - updated for multiple timers
         document.getElementById('startTimer').addEventListener('click', () => this.startTimer());
-        document.getElementById('stopTimer').addEventListener('click', () => this.stopTimer());
+        
+        // Handle enter key in timer inputs
+        document.getElementById('timerMinutes').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') this.startTimer();
+        });
+        document.getElementById('timerSeconds').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') this.startTimer();
+        });
         
         // Unit converter
         document.getElementById('convertBtn').addEventListener('click', () => this.convertUnits());
@@ -334,20 +410,21 @@ class KitchenAssistant {
         }
     }
     
-    // Timer functionality
+    // Timer functionality - updated for multiple timers
     async startTimer() {
         const minutes = parseInt(document.getElementById('timerMinutes').value) || 0;
         const seconds = parseInt(document.getElementById('timerSeconds').value) || 0;
         const totalSeconds = minutes * 60 + seconds;
         
         if (totalSeconds <= 0) {
-            alert('Please enter a valid time');
+            this.showNotification('Invalid Time', 'Please enter a valid time');
             return;
         }
         
         // Immediate UI feedback
-        document.getElementById('startTimer').disabled = true;
-        document.getElementById('startTimer').innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
+        const startButton = document.getElementById('startTimer');
+        startButton.disabled = true;
+        startButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
         
         try {
             const response = await fetch(`${this.backendUrl}/api/timer/start`, {
@@ -356,70 +433,177 @@ class KitchenAssistant {
                 body: JSON.stringify({ seconds: totalSeconds })
             });
             
+            if (!response.ok) {
+                throw new Error('Failed to start timer');
+            }
+            
             const data = await response.json();
             console.log('Timer started:', data);
             
+            // Reset form
+            document.getElementById('timerMinutes').value = '5';
+            document.getElementById('timerSeconds').value = '0';
+            
             // Reset button state
-            document.getElementById('startTimer').disabled = false;
-            document.getElementById('startTimer').innerHTML = '<i class="fas fa-play"></i> Start';
+            startButton.disabled = false;
+            startButton.innerHTML = '<i class="fas fa-play"></i> Start Timer';
             
         } catch (error) {
             console.error('Error starting timer:', error);
             // Reset button state on error
-            document.getElementById('startTimer').disabled = false;
-            document.getElementById('startTimer').innerHTML = '<i class="fas fa-play"></i> Start';
-            alert('Failed to start timer. Please check connection.');
-        }
-    }
-    
-    async stopTimer() {
-        const timerId = Array.from(this.activeTimers.keys())[0];
-        if (!timerId) return;
-        
-        try {
-            const response = await fetch(`${this.backendUrl}/api/timer/stop`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: timerId })
-            });
-            
-            console.log('Timer stopped');
-        } catch (error) {
-            console.error('Error stopping timer:', error);
+            startButton.disabled = false;
+            startButton.innerHTML = '<i class="fas fa-play"></i> Start Timer';
+            this.showNotification('Error', 'Failed to start timer. Please check connection.');
         }
     }
     
     handleTimerStarted(data) {
-        this.activeTimers.set(data.id, data);
-        document.getElementById('stopTimer').disabled = false;
-        this.updateTimerDisplay(data.secondsLeft || data.seconds);
+        const timer = {
+            ...data,
+            startTime: Date.now(),
+            originalSeconds: data.secondsLeft || data.seconds,
+            name: this.generateTimerName(data.secondsLeft || data.seconds)
+        };
+        this.activeTimers.set(data.id, timer);
+        this.renderActiveTimers();
+        this.showNotification('Timer Started', `${timer.name} has been started!`);
     }
     
     handleTimerUpdate(data) {
-        this.updateTimerDisplay(data.secondsLeft);
-    }
-    
-    handleTimerDone(data) {
-        this.activeTimers.delete(data.id);
-        document.getElementById('stopTimer').disabled = this.activeTimers.size === 0;
-        this.updateTimerDisplay(0);
-        this.speak('Timer finished!');
-        this.showNotification('Timer Complete!', 'Your kitchen timer has finished.');
-    }
-    
-    handleTimerStopped(data) {
-        this.activeTimers.delete(data.id);
-        document.getElementById('stopTimer').disabled = this.activeTimers.size === 0;
-        if (this.activeTimers.size === 0) {
-            this.updateTimerDisplay(0);
+        if (this.activeTimers.has(data.id)) {
+            const timer = this.activeTimers.get(data.id);
+            timer.secondsLeft = data.secondsLeft;
+            this.activeTimers.set(data.id, timer);
+            this.updateTimerItem(data.id, data.secondsLeft);
         }
     }
     
-    updateTimerDisplay(seconds) {
+    handleTimerDone(data) {
+        if (this.activeTimers.has(data.id)) {
+            const timer = this.activeTimers.get(data.id);
+            this.activeTimers.delete(data.id);
+            this.renderActiveTimers();
+            this.speak(`${timer.name} finished!`);
+            this.showNotification('Timer Complete!', `${timer.name} has finished!`);
+            
+            // Flash the timer item before removing
+            this.flashTimerCompletion(data.id);
+        }
+    }
+    
+    handleTimerStopped(data) {
+        if (this.activeTimers.has(data.id)) {
+            const timer = this.activeTimers.get(data.id);
+            this.activeTimers.delete(data.id);
+            this.renderActiveTimers();
+            this.showNotification('Timer Stopped', `${timer.name} has been stopped.`);
+        }
+    }
+    
+    generateTimerName(totalSeconds) {
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        
+        if (minutes > 0 && seconds > 0) {
+            return `${minutes}m ${seconds}s Timer`;
+        } else if (minutes > 0) {
+            return `${minutes} Minute Timer`;
+        } else {
+            return `${seconds} Second Timer`;
+        }
+    }
+    
+    renderActiveTimers() {
+        const container = document.getElementById('activeTimers');
+        if (!container) return;
+        
+        if (this.activeTimers.size === 0) {
+            container.innerHTML = '<p style="text-align: center; color: #666; font-style: italic; margin: 20px 0;">No active timers</p>';
+            return;
+        }
+        
+        container.innerHTML = '';
+        
+        for (const [id, timer] of this.activeTimers) {
+            const timerElement = this.createTimerElement(id, timer);
+            container.appendChild(timerElement);
+        }
+    }
+    
+    createTimerElement(id, timer) {
+        const element = document.createElement('div');
+        element.className = 'timer-item';
+        element.id = `timer-${id}`;
+        
+        const timeDisplay = this.formatTime(timer.secondsLeft || 0);
+        
+        element.innerHTML = `
+            <div class="timer-info">
+                <div class="timer-name">${timer.name}</div>
+                <div class="timer-time" id="timer-time-${id}">${timeDisplay}</div>
+            </div>
+            <div class="timer-controls">
+                <span class="timer-status running">Running</span>
+                <button class="timer-btn stop" onclick="window.kitchenAssistant.stopSpecificTimer(${id})">
+                    <i class="fas fa-stop"></i> Stop
+                </button>
+            </div>
+        `;
+        
+        return element;
+    }
+    
+    updateTimerItem(id, secondsLeft) {
+        const timeElement = document.getElementById(`timer-time-${id}`);
+        if (timeElement) {
+            timeElement.textContent = this.formatTime(secondsLeft);
+            
+            // Add visual feedback for low time
+            if (secondsLeft <= 60) {
+                timeElement.style.color = '#dc3545';
+                timeElement.style.animation = 'pulse 1s infinite';
+            } else {
+                timeElement.style.color = '#667eea';
+                timeElement.style.animation = 'none';
+            }
+        }
+    }
+    
+    formatTime(seconds) {
         const minutes = Math.floor(seconds / 60);
         const remainingSeconds = seconds % 60;
-        const display = `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
-        document.getElementById('timerDisplay').textContent = display;
+        return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+    }
+    
+    async stopSpecificTimer(id) {
+        try {
+            const response = await fetch(`${this.backendUrl}/api/timer/stop`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id })
+            });
+            
+            if (!response.ok) {
+                throw new Error('Failed to stop timer');
+            }
+            
+            console.log(`Timer ${id} stopped by user`);
+        } catch (error) {
+            console.error('Error stopping specific timer:', error);
+            this.showNotification('Error', 'Failed to stop timer');
+        }
+    }
+    
+    flashTimerCompletion(id) {
+        const element = document.getElementById(`timer-${id}`);
+        if (element) {
+            element.style.animation = 'flash 0.5s ease-in-out 3';
+            setTimeout(() => {
+                if (element.parentNode) {
+                    element.remove();
+                }
+            }, 1500);
+        }
     }
     
     // Handle real-time API call updates from WebSocket
@@ -825,6 +1009,48 @@ class KitchenAssistant {
             new Notification(title, { body: message });
         }
     }
+    
+    // Helper method to show system messages
+    showSystemMessage(message) {
+        console.log('💬 System:', message);
+        // You can add UI updates here if needed
+        const messagesDiv = document.getElementById('messages');
+        if (messagesDiv) {
+            const messageEl = document.createElement('div');
+            messageEl.className = 'message system';
+            messageEl.textContent = message;
+            messagesDiv.appendChild(messageEl);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+    }
+    
+    // Helper method to update voice status
+    updateVoiceStatus(status) {
+        console.log('🎙️ Voice status:', status);
+        const agentStatus = document.getElementById('agent-status');
+        if (agentStatus) {
+            agentStatus.textContent = status;
+        }
+    }
+    
+    // Method to stop conversation cleanly
+    stopConversation() {
+        this.autoReconnect = false;
+        
+        if (conversation) {
+            try {
+                conversation.endSession();
+                wsManager.removeConnection('elevenlabs');
+                console.log('🔌 ElevenLabs conversation ended');
+            } catch (error) {
+                console.error('❌ Error ending conversation:', error);
+            }
+            conversation = null;
+        }
+        
+        this.updateConnectionStatus('Disconnected', false);
+        this.updateVoiceStatus('Stopped');
+    }
 }
 
 // ElevenLabs Conversation Variables
@@ -861,12 +1087,27 @@ async function getSignedUrl() {
 
 async function startConversation() {
     try {
+        // Update status
+        window.kitchenAssistant.updateConnectionStatus('Connecting...', false);
+        
         // Request microphone permission
         await navigator.mediaDevices.getUserMedia({ audio: true });
 
         const signedUrl = await getSignedUrl();
+        console.log('🔗 Got signed URL for ElevenLabs');
+        
+        // Close any existing ElevenLabs connection
+        if (conversation) {
+            try {
+                await conversation.endSession();
+                wsManager.removeConnection('elevenlabs');
+                console.log('🔌 Closed existing ElevenLabs connection');
+            } catch (error) {
+                console.warn('⚠️ Error closing existing conversation:', error);
+            }
+        }
 
-        console.log('Using imported Conversation from @elevenlabs/client');
+        console.log('🎯 Using imported Conversation from @elevenlabs/client');
         
         // Start the conversation using imported Conversation
         conversation = await Conversation.startSession({
@@ -878,137 +1119,207 @@ async function startConversation() {
                     return "Message displayed";
                 },
                 searchYoutube: async (parameters) => {
-                    const query = parameters.query || parameters.q;
-                    if (!query) {
-                        return "No search query provided";
-                    }
-                    
-                    appendMessage('System', `🎤 Voice Agent: Searching YouTube for: ${query}`);
-                    
-                    // Call the backend API which will trigger WebSocket updates
                     try {
-                        const response = await fetch(`http://localhost:3000/api/youtube/search?q=${encodeURIComponent(query)}`);
+                        const query = parameters.query || parameters.q;
+                        if (!query) {
+                            return "No search query provided";
+                        }
+                        
+                        console.log('🎬 ElevenLabs triggered YouTube search:', query);
+                        appendMessage('System', `🎤 Voice Agent: Searching YouTube for: ${query}`);
+                        window.kitchenAssistant.showSystemMessage('🔍 Searching for cooking videos...');
+                        
+                        // Pause WebSocket broadcasting during API call
+                        window.kitchenAssistant.pauseWebSocketBroadcasting = true;
+                        
+                        const response = await fetch(`${window.kitchenAssistant.backendUrl}/api/youtube/search?q=${encodeURIComponent(query)}`);
                         const videos = await response.json();
                         
+                        // Resume WebSocket broadcasting
+                        window.kitchenAssistant.pauseWebSocketBroadcasting = false;
+                        
                         if (videos && videos.length > 0) {
-                            // The WebSocket will handle the UI update, but we also update here for immediate feedback
                             window.kitchenAssistant.displaySearchResults(videos);
                             appendMessage('System', `🎤 Voice Agent: Found ${videos.length} videos`);
+                            window.kitchenAssistant.showSystemMessage(`✅ Found ${videos.length} videos`);
                             return `Found ${videos.length} YouTube videos for "${query}". Videos are displayed above for you to play.`;
                         } else {
                             appendMessage('System', '🎤 Voice Agent: No videos found');
                             return `No YouTube videos found for "${query}".`;
                         }
                     } catch (error) {
-                        console.error('Voice agent YouTube search error:', error);
+                        window.kitchenAssistant.pauseWebSocketBroadcasting = false;
+                        console.error('❌ YouTube search error:', error);
                         appendMessage('System', '🎤 Voice Agent: Error searching videos');
-                        return `Sorry, I encountered an error while searching for "${query}".`;
+                        return `Sorry, I couldn't search for videos right now.`;
                     }
                 },
                 
                 setTimer: async (parameters) => {
-                    console.log('Voice agent setting timer:', parameters);
-                    const duration = parameters.duration || parameters.minutes || parameters.seconds;
-                    if (!duration) {
-                        return "Please specify timer duration";
-                    }
-                    
-                    let seconds = 0;
-                    if (typeof duration === 'string') {
-                        const match = duration.match(/(\d+)\s*(minute|min|second|sec)/i);
-                        if (match) {
-                            const value = parseInt(match[1]);
-                            const unit = match[2].toLowerCase();
-                            seconds = unit.startsWith('min') ? value * 60 : value;
+                    try {
+                        console.log('⏰ ElevenLabs triggered timer:', parameters);
+                        const duration = parameters.duration || parameters.minutes || parameters.seconds;
+                        if (!duration) {
+                            return "Please specify timer duration";
+                        }
+                        
+                        let seconds = 0;
+                        if (typeof duration === 'string') {
+                            const match = duration.match(/(\d+)\s*(minute|min|second|sec)/i);
+                            if (match) {
+                                const value = parseInt(match[1]);
+                                const unit = match[2].toLowerCase();
+                                seconds = unit.startsWith('min') ? value * 60 : value;
+                            } else {
+                                seconds = parseInt(duration) || 0;
+                            }
                         } else {
                             seconds = parseInt(duration) || 0;
                         }
-                    } else {
-                        seconds = parseInt(duration) || 0;
-                    }
-                    
-                    if (seconds <= 0) {
-                        return "Invalid timer duration";
-                    }
-                    
-                    appendMessage('System', `🎤 Voice Agent: Setting timer for ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`);
-                    
-                    try {
-                        const response = await fetch('http://localhost:3000/api/timer/start', {
+                        
+                        if (seconds <= 0) {
+                            return "Invalid timer duration";
+                        }
+                        
+                        window.kitchenAssistant.showSystemMessage('⏰ Starting timer...');
+                        
+                        // Pause WebSocket broadcasting during API call
+                        window.kitchenAssistant.pauseWebSocketBroadcasting = true;
+                        
+                        appendMessage('System', `🎤 Voice Agent: Setting timer for ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`);
+                        
+                        const response = await fetch(`${window.kitchenAssistant.backendUrl}/api/timer/start`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ seconds })
                         });
                         
+                        // Resume WebSocket broadcasting
+                        window.kitchenAssistant.pauseWebSocketBroadcasting = false;
+                        
                         const data = await response.json();
                         appendMessage('System', `🎤 Voice Agent: Timer started successfully`);
+                        window.kitchenAssistant.showSystemMessage('✅ Timer started!');
                         return `Timer set for ${Math.floor(seconds/60)} minutes and ${seconds%60} seconds. I'll notify you when it's done.`;
                     } catch (error) {
-                        console.error('Voice agent timer error:', error);
+                        window.kitchenAssistant.pauseWebSocketBroadcasting = false;
+                        console.error('❌ Timer start error:', error);
                         appendMessage('System', '🎤 Voice Agent: Error setting timer');
-                        return "Sorry, I couldn't set the timer. Please try again.";
+                        return "Sorry, I couldn't start the timer.";
                     }
                 },
                 
                 convertUnits: async (parameters) => {
-                    console.log('Voice agent converting units:', parameters);
-                    const { value, from, to, amount, fromUnit, toUnit } = parameters;
-                    
-                    const convertValue = value || amount;
-                    const fromUnitName = from || fromUnit;
-                    const toUnitName = to || toUnit;
-                    
-                    if (!convertValue || !fromUnitName || !toUnitName) {
-                        return "Please specify amount, from unit, and to unit for conversion";
-                    }
-                    
-                    appendMessage('System', `🎤 Voice Agent: Converting ${convertValue} ${fromUnitName} to ${toUnitName}`);
-                    
                     try {
-                        const response = await fetch(`http://localhost:3000/api/convert?value=${convertValue}&from=${fromUnitName}&to=${toUnitName}`);
+                        console.log('🧮 ElevenLabs triggered conversion:', parameters);
+                        const { value, from, to, amount, fromUnit, toUnit } = parameters;
+                        
+                        const convertValue = value || amount;
+                        const fromUnitName = from || fromUnit;
+                        const toUnitName = to || toUnit;
+                        
+                        if (!convertValue || !fromUnitName || !toUnitName) {
+                            return "Please specify amount, from unit, and to unit for conversion";
+                        }
+                        
+                        window.kitchenAssistant.showSystemMessage('🧮 Converting units...');
+                        
+                        // Pause WebSocket broadcasting during API call
+                        window.kitchenAssistant.pauseWebSocketBroadcasting = true;
+                        
+                        appendMessage('System', `🎤 Voice Agent: Converting ${convertValue} ${fromUnitName} to ${toUnitName}`);
+                        
+                        const response = await fetch(`${window.kitchenAssistant.backendUrl}/api/convert?value=${convertValue}&from=${fromUnitName}&to=${toUnitName}`);
                         const data = await response.json();
+                        
+                        // Resume WebSocket broadcasting
+                        window.kitchenAssistant.pauseWebSocketBroadcasting = false;
                         
                         if (data.result !== undefined) {
                             appendMessage('System', `🎤 Voice Agent: ${convertValue} ${fromUnitName} = ${data.result} ${toUnitName}`);
+                            window.kitchenAssistant.showSystemMessage('✅ Conversion complete!');
                             return `${convertValue} ${fromUnitName} equals ${data.result} ${toUnitName}.`;
                         } else {
                             appendMessage('System', '🎤 Voice Agent: Conversion not supported');
                             return `Sorry, I can't convert from ${fromUnitName} to ${toUnitName}.`;
                         }
                     } catch (error) {
-                        console.error('Voice agent conversion error:', error);
+                        window.kitchenAssistant.pauseWebSocketBroadcasting = false;
+                        console.error('❌ Conversion error:', error);
                         appendMessage('System', '🎤 Voice Agent: Error converting units');
-                        return "Sorry, I encountered an error during conversion.";
+                        return "Sorry, I couldn't convert those units.";
                     }
                 },
             },
             onConnect: () => {
+                console.log('🎉 ElevenLabs conversation connected');
                 connectionStatus.textContent = 'Connected';
                 startButton.disabled = true;
                 stopButton.disabled = false;
+                window.kitchenAssistant.updateConnectionStatus('Connected', true);
+                wsManager.addConnection('elevenlabs', conversation);
             },
-            onDisconnect: () => {
+            onDisconnect: (reason) => {
+                console.log('🔌 ElevenLabs conversation disconnected:', reason);
                 connectionStatus.textContent = 'Disconnected';
                 startButton.disabled = false;
                 stopButton.disabled = true;
+                window.kitchenAssistant.updateConnectionStatus('Disconnected', false);
+                wsManager.removeConnection('elevenlabs');
+                
+                // Auto-reconnect if not intentional
+                if (reason !== 'user_initiated' && window.kitchenAssistant.autoReconnect) {
+                    setTimeout(() => {
+                        console.log('🔄 Attempting to reconnect ElevenLabs...');
+                        startConversation();
+                    }, 3000);
+                }
             },
             onError: (error) => {
-                console.error('Error:', error);
+                console.error('❌ ElevenLabs conversation error:', error);
+                window.kitchenAssistant.updateConnectionStatus('Error', false);
+                
+                // Don't broadcast errors that might interfere
+                if (!error.message.includes('WebSocket')) {
+                    window.kitchenAssistant.showSystemMessage('❌ Voice conversation error');
+                }
             },
             onModeChange: (mode) => {
+                console.log('🎙️ ElevenLabs mode changed:', mode.mode);
                 agentStatus.textContent = mode.mode === 'speaking' ? 'speaking' : 'listening';
+                window.kitchenAssistant.updateVoiceStatus(mode.mode === 'speaking' ? 'Speaking' : 'Listening');
             },
         });
+
+        console.log('✅ ElevenLabs conversation started successfully');
+        window.kitchenAssistant.autoReconnect = true;
+        
     } catch (error) {
-        console.error('Failed to start conversation:', error);
+        console.error('❌ Failed to start conversation:', error);
+        window.kitchenAssistant.updateConnectionStatus('Failed to connect', false);
+        window.kitchenAssistant.showSystemMessage('❌ Failed to start voice conversation');
     }
 }
 
 async function stopConversation() {
+    window.kitchenAssistant.autoReconnect = false;
+    
     if (conversation) {
-        await conversation.endSession();
+        try {
+            await conversation.endSession();
+            wsManager.removeConnection('elevenlabs');
+            console.log('🔌 ElevenLabs conversation ended');
+        } catch (error) {
+            console.error('❌ Error ending conversation:', error);
+        }
         conversation = null;
     }
+    
+    connectionStatus.textContent = 'Disconnected';
+    startButton.disabled = false;
+    stopButton.disabled = true;
+    window.kitchenAssistant.updateConnectionStatus('Disconnected', false);
+    window.kitchenAssistant.updateVoiceStatus('Stopped');
 }
 
 function appendMessage(sender, text) {
@@ -1107,3 +1418,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load conversation history
     fetchConversationHistory();
 });
+
+// Add cleanup on page unload to prevent WebSocket conflicts
+window.addEventListener('beforeunload', () => {
+    console.log('🧹 Cleaning up WebSocket connections');
+    wsManager.closeAll();
+    
+    if (conversation) {
+        try {
+            conversation.endSession();
+        } catch (error) {
+            console.warn('⚠️ Error ending ElevenLabs session:', error);
+        }
+    }
+});
+
+// WebSocket connections are properly managed by the wsManager
+console.log('� WebSocket conflict prevention system loaded');
