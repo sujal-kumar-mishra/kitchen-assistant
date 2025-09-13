@@ -59,6 +59,12 @@ class KitchenAssistant {
         this.backendUrl = window.location.hostname === 'localhost' ? 
             'http://localhost:3000' : 
             'https://kitchen-assistant-8quk.onrender.com';
+            
+        console.log('🌐 Frontend running on:', window.location.origin);
+        console.log('🔗 Backend URL configured as:', this.backendUrl);
+        
+        // Test backend availability immediately
+        this.testBackendConnectivity();
         
         this.init();
     }
@@ -77,17 +83,22 @@ class KitchenAssistant {
     initializeSocketIO() {
         try {
             console.log('🔌 Connecting to backend Socket.IO:', this.backendUrl);
+            console.log('🔌 Connection attempt from:', window.location.origin);
             
             this.socketIO = io(this.backendUrl, {
                 transports: ['websocket', 'polling'],
                 timeout: 20000,
                 reconnection: true,
                 reconnectionDelay: 1000,
-                reconnectionAttempts: 5
+                reconnectionAttempts: 5,
+                forceNew: true,
+                upgrade: true
             });
             
             this.socketIO.on('connect', () => {
-                console.log('✅ Socket.IO connected');
+                console.log('✅ Socket.IO connected successfully');
+                console.log('🔗 Connected to:', this.backendUrl);
+                console.log('📡 Socket ID:', this.socketIO.id);
                 this.updateConnectionStatus('Connected', true);
                 wsManager.addConnection('backend', this.socketIO);
             });
@@ -96,6 +107,13 @@ class KitchenAssistant {
                 console.log('🔌 Socket.IO disconnected:', reason);
                 this.updateConnectionStatus('Disconnected', false);
                 wsManager.removeConnection('backend');
+            });
+            
+            this.socketIO.on('connect_error', (error) => {
+                console.error('🚫 Socket.IO connection error:', error);
+                console.error('🔗 Failed to connect to:', this.backendUrl);
+                console.error('🌐 From origin:', window.location.origin);
+                this.updateConnectionStatus('Connection Failed', false);
             });
             
             this.socketIO.on('timer:started', (data) => {
@@ -112,6 +130,12 @@ class KitchenAssistant {
             
             this.socketIO.on('timer:stopped', (data) => {
                 this.handleTimerStopped(data);
+            });
+            
+            // Test connection handler
+            this.socketIO.on('test-pong', (data) => {
+                console.log('🏓 Received pong from backend:', data);
+                this.showNotification('Connection Test', 'Backend responded successfully!');
             });
             
             this.socketIO.on('timer:bootstrap', (data) => {
@@ -440,6 +464,17 @@ class KitchenAssistant {
             const data = await response.json();
             console.log('Timer started:', data);
             
+            // Immediately add timer to UI as fallback (in case WebSocket is slow/broken)
+            const timer = {
+                ...data,
+                startTime: Date.now(),
+                originalSeconds: data.secondsLeft || data.seconds || totalSeconds,
+                name: this.generateTimerName(data.secondsLeft || data.seconds || totalSeconds)
+            };
+            this.activeTimers.set(data.id, timer);
+            this.renderActiveTimers();
+            this.showNotification('Timer Started', `${timer.name} has been started!`);
+            
             // Reset form
             document.getElementById('timerMinutes').value = '5';
             document.getElementById('timerSeconds').value = '0';
@@ -518,7 +553,13 @@ class KitchenAssistant {
         if (!container) return;
         
         if (this.activeTimers.size === 0) {
-            container.innerHTML = '<p style="text-align: center; color: #666; font-style: italic; margin: 20px 0;">No active timers</p>';
+            // Check if backend is connected to provide better feedback
+            const isConnected = this.socketIO && this.socketIO.connected;
+            const message = isConnected ? 
+                'No active timers' : 
+                'No active timers (Backend connection issues - timers may not update properly)';
+            
+            container.innerHTML = `<p style="text-align: center; color: ${isConnected ? '#666' : '#ff6b6b'}; font-style: italic; margin: 20px 0;">${message}</p>`;
             return;
         }
         
@@ -954,7 +995,16 @@ class KitchenAssistant {
         }, 8000);
         
         playerDiv.style.display = 'block';
-        this.currentVideo = videoId;
+        this.currentVideo = { 
+            videoId, 
+            title, 
+            iframe,
+            isPlaying: true,
+            playerDiv
+        };
+        
+        // Update control buttons to show they're active
+        this.updateVideoControls(true);
         
         // Add close video functionality
         const closeBtn = document.getElementById('closeVideo');
@@ -963,6 +1013,7 @@ class KitchenAssistant {
                 container.innerHTML = '';
                 playerDiv.style.display = 'none';
                 this.currentVideo = null;
+                this.updateVideoControls(false);
                 console.log('Video closed');
             };
         }
@@ -975,15 +1026,148 @@ class KitchenAssistant {
     }
     
     togglePlayPause() {
-        if (!this.currentVideo) return;
-        console.log('Play/Pause toggled');
-        this.speak('Video playback toggled');
+        if (!this.currentVideo) {
+            console.log('No video is currently playing');
+            this.speak('No video is currently playing');
+            return;
+        }
+        
+        const iframe = document.querySelector('#videoContainer2 iframe');
+        if (iframe) {
+            try {
+                // For YouTube embedded videos, we need to use the YouTube API
+                // Since we can't directly control iframe videos due to CORS,
+                // we'll toggle the iframe visibility and provide feedback
+                const isHidden = iframe.style.display === 'none';
+                if (isHidden) {
+                    iframe.style.display = 'block';
+                    console.log('Video resumed (iframe shown)');
+                    this.speak('Video resumed');
+                } else {
+                    iframe.style.display = 'none';
+                    console.log('Video paused (iframe hidden)');
+                    this.speak('Video paused');
+                }
+            } catch (error) {
+                console.error('Error controlling video:', error);
+                this.speak('Cannot control video playback');
+            }
+        } else {
+            console.log('No video iframe found');
+            this.speak('No video is currently loaded');
+        }
     }
     
     adjustVolume(delta) {
-        if (!this.currentVideo) return;
-        console.log(`Volume adjusted by ${delta}`);
-        this.speak(delta > 0 ? 'Volume up' : 'Volume down');
+        if (!this.currentVideo) {
+            console.log('No video is currently playing');
+            this.speak('No video is currently playing');
+            return;
+        }
+        
+        // Since we can't directly control YouTube iframe volume due to CORS,
+        // we'll provide feedback and suggest keyboard controls
+        const action = delta > 0 ? 'increase' : 'decrease';
+        console.log(`Volume ${action} requested`);
+        this.speak(`Use your keyboard arrow keys or YouTube controls to ${action} volume`);
+        
+        // Show a helpful message
+        this.showNotification('Volume Control', `Use YouTube player controls or keyboard to ${action} volume`);
+    }
+    
+    // Update video control button states
+    updateVideoControls(hasVideo) {
+        const playPauseBtn = document.getElementById('playPause');
+        const volumeUpBtn = document.getElementById('volumeUp');
+        const volumeDownBtn = document.getElementById('volumeDown');
+        
+        if (playPauseBtn) {
+            playPauseBtn.disabled = !hasVideo;
+            playPauseBtn.style.opacity = hasVideo ? '1' : '0.5';
+        }
+        
+        if (volumeUpBtn) {
+            volumeUpBtn.disabled = !hasVideo;
+            volumeUpBtn.style.opacity = hasVideo ? '1' : '0.5';
+        }
+        
+        if (volumeDownBtn) {
+            volumeDownBtn.disabled = !hasVideo;
+            volumeDownBtn.style.opacity = hasVideo ? '1' : '0.5';
+        }
+    }
+    
+    // Debug method to check system status
+    checkSystemStatus() {
+        const status = {
+            frontend: window.location.origin,
+            backend: this.backendUrl,
+            socketConnected: this.socketIO && this.socketIO.connected,
+            socketId: this.socketIO ? this.socketIO.id : 'Not available',
+            timers: this.activeTimers.size,
+            video: !!this.currentVideo,
+            videoFrame: !!document.querySelector('#videoContainer2 iframe')
+        };
+        
+        console.log('=== System Status ===');
+        console.log('Frontend URL:', status.frontend);
+        console.log('Backend URL:', status.backend);
+        console.log('Socket Connected:', status.socketConnected);
+        console.log('Socket ID:', status.socketId);
+        console.log('Active Timers:', status.timers);
+        console.log('Video Loaded:', status.video);
+        console.log('===================');
+        
+        this.showNotification('System Status', 
+            `Backend: ${status.socketConnected ? 'Connected' : 'Disconnected'} | 
+             Timers: ${status.timers} active | 
+             Video: ${status.video ? 'Loaded' : 'None'}`);
+        
+        return status;
+    }
+    
+    // Test backend connectivity
+    async testBackendConnectivity() {
+        try {
+            console.log('🔍 Testing backend connectivity...');
+            const response = await fetch(`${this.backendUrl}/health`, {
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                console.log('✅ Backend is reachable:', data);
+                console.log('⏰ Server time:', data.time);
+            } else {
+                console.error('❌ Backend responded with error:', response.status, response.statusText);
+            }
+        } catch (error) {
+            console.error('🚫 Backend is not reachable:', error.message);
+            console.error('🔗 Attempted to reach:', this.backendUrl);
+            
+            // Show user-friendly error
+            this.showNotification('Connection Error', 
+                'Cannot reach backend server. Timers and real-time features may not work.');
+        }
+    }
+    
+    // Test WebSocket connection manually
+    testConnection() {
+        console.log('🧪 Testing WebSocket connection...');
+        
+        if (this.socketIO) {
+            if (this.socketIO.connected) {
+                console.log('✅ Socket is already connected');
+                this.socketIO.emit('test-ping', { timestamp: Date.now() });
+            } else {
+                console.log('🔄 Socket exists but not connected, attempting reconnection...');
+                this.socketIO.connect();
+            }
+        } else {
+            console.log('❌ No socket instance, reinitializing...');
+            this.initializeSocketIO();
+        }
     }
     
     // Utility functions
@@ -1414,6 +1598,38 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize KitchenAssistant
     window.kitchenAssistant = new KitchenAssistant();
     console.log('Kitchen Smart Assistant initialized!');
+    
+    // Debug helper functions (accessible from browser console)
+    window.debugKitchen = {
+        checkStatus: () => window.kitchenAssistant.checkSystemStatus(),
+        testConnection: () => window.kitchenAssistant.testConnection(),
+        testBackend: () => window.kitchenAssistant.testBackendConnectivity(),
+        testTimer: (seconds = 10) => {
+            document.getElementById('timerMinutes').value = '0';
+            document.getElementById('timerSeconds').value = seconds.toString();
+            window.kitchenAssistant.startTimer();
+        },
+        testVideo: (query = 'cooking') => window.kitchenAssistant.searchYouTube(query),
+        showTimers: () => {
+            console.log('Active timers:', Array.from(window.kitchenAssistant.activeTimers.entries()));
+            window.kitchenAssistant.renderActiveTimers();
+        },
+        reconnect: () => {
+            console.log('🔄 Manual reconnection attempt...');
+            if (window.kitchenAssistant.socketIO) {
+                window.kitchenAssistant.socketIO.disconnect();
+                setTimeout(() => window.kitchenAssistant.socketIO.connect(), 1000);
+            }
+        },
+        fixConnection: async () => {
+            console.log('🔧 Running comprehensive connection diagnostics...');
+            await window.kitchenAssistant.testBackendConnectivity();
+            window.kitchenAssistant.testConnection();
+            setTimeout(() => window.kitchenAssistant.checkSystemStatus(), 2000);
+        }
+    };
+    
+    console.log('Kitchen Assistant loaded. Use window.debugKitchen for debugging functions.');
     
     // Load conversation history
     fetchConversationHistory();
