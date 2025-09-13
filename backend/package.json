@@ -8,16 +8,23 @@
     "dev": "nodemon server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["kitchen", "assistant", "elevenlabs", "api", "backend"],
+  "keywords": [
+    "kitchen",
+    "assistant",
+    "elevenlabs",
+    "api",
+    "backend"
+  ],
   "author": "Sujal Kumar Mishra",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "express": "^4.18.0",
-    "cors": "^2.8.5",
     "axios": "^1.6.0",
-    "socket.io": "^4.7.2",
+    "cors": "^2.8.5",
     "dotenv": "^16.3.0",
+    "express": "^4.18.0",
+    "ioredis": "^5.7.0",
+    "socket.io": "^4.7.2",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
