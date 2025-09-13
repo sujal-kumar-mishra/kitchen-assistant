@@ -849,7 +849,7 @@ function initializeDOMElements() {
 async function getSignedUrl() {
     const backendUrl = window.location.hostname === 'localhost' ? 
         'http://localhost:3000' : 
-        'https://kitchen-assistant-backend.onrender.com';
+        'https://kitchen-assistant-8quk.onrender.com';
     
     const response = await fetch(`${backendUrl}/api/get-signed-url`);
     if (!response.ok) {
@@ -1031,7 +1031,7 @@ async function fetchConversationHistory() {
     try {
         const backendUrl = window.location.hostname === 'localhost' ? 
             'http://localhost:3000' : 
-            'https://kitchen-assistant-backend.onrender.com';
+            'https://kitchen-assistant-8quk.onrender.com';
         
         const res = await fetch(`${backendUrl}/api/conversation-history`);
         const data = await res.json();
@@ -1068,7 +1068,7 @@ function initializeEventListeners() {
             try {
                 const backendUrl = window.location.hostname === 'localhost' ? 
                     'http://localhost:3000' : 
-                    'https://kitchen-assistant-backend.onrender.com';
+                    'https://kitchen-assistant-8quk.onrender.com';
                 
                 const res = await fetch(`${backendUrl}/api/converse`, {
                     method: 'POST',

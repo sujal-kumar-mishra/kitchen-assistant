@@ -290,12 +290,13 @@ app.use('/api/youtube', youtubeRoutes);
 app.use('/api', chatRoutes);
 app.use('/api/timer', timerRoutes(timerManager));
 
-
-io.on('connection', (socket) => {
-  socket.emit('timer:bootstrap', { timers: timerManager.listTimers() });
-});
-
-
+// Start server
 server.listen(PORT, () => {
+  logger.info('🌟 Kitchen Assistant Backend Server is running', {
+    port: PORT,
+    environment: process.env.NODE_ENV || 'development',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
   console.log(`Server running on http://localhost:${PORT}`);
 });
