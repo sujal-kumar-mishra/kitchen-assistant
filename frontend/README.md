@@ -93,9 +93,45 @@ The frontend automatically detects the environment and connects to:
 - **Server:** Node.js HTTP Server
 - **Deployment:** Render Platform
 
-## Health Check
+## Health & Monitoring
 
-The application includes a health check endpoint at `/` that returns server status.
+- Container health check uses `GET /health` (implemented in `serve.js`).
+- Dockerfile now:
+   - Sets `NODE_ENV=production`
+   - Uses `npm ci --only=production`
+   - Runs as non‑root `nodeuser`
+   - Adds `curl` + `tini` for proper health checks & signal handling.
+
+### Sample Docker Run
+```bash
+docker build -t kitchen-assistant-frontend .
+docker run --rm -p 8081:8081 kitchen-assistant-frontend
+curl http://localhost:8081/health
+```
+
+Expected JSON:
+```json
+{ "status": "healthy", "port": 8081 }
+```
+
+## Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---------|--------------|-----|
+| Voice agent shows "misconfigured" | Old cached script / duplicate session | Hard refresh (Ctrl+Shift+R) then click Start again |
+| Timers not updating | SSE blocked (ad blocker) | Use `window.debugKitchen.switchToPolling()` in console |
+| YouTube embed blank | Privacy / extension blocking iframe | Click a video and choose "YouTube" button (opens new tab) |
+| Health check failing in container | Missing curl (old image) | Rebuild image; ensure updated Dockerfile applied |
+| Cannot reach backend | Wrong BACKEND_URL or CORS | Verify backend `/health` and env var |
+
+### Debug Console Helpers
+Open DevTools Console and use:
+```js
+window.debugKitchen.checkStatus();      // Summary
+window.debugKitchen.testBackend();      // Ping backend
+window.debugKitchen.testElevenLabs();   // Fetch signed URL
+window.debugKitchen.switchToPolling();  // Force polling fallback
+```
 
 ## Support
 

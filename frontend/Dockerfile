@@ -1,24 +1,32 @@
 # Use Node.js official image
 FROM node:18-alpine
 
-# Set working directory
 WORKDIR /app
+
+# Install curl for healthcheck and add tini for proper signal handling
+RUN apk add --no-cache curl tini
 
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install --only=production
+# Set NODE_ENV for smaller installs
+ENV NODE_ENV=production
+
+# Install dependencies (production only)
+RUN npm ci --only=production
 
 # Copy application files
 COPY . .
 
-# Expose port
+# Create non-root user for security
+RUN addgroup -S nodegroup && adduser -S nodeuser -G nodegroup
+USER nodeuser
+
 EXPOSE 8081
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:8081/ || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD curl -fsS http://localhost:8081/health || exit 1
 
-# Start the application
+# Start the application via tini for correct signal handling
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["npm", "start"]
